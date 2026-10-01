@@ -1,6 +1,7 @@
 funs
 hiddengemgroup
 Millis
+movogo
 nodebuffer
 onwarn
 subber

@@ -2,6 +2,13 @@
   "name": "@riddance/deploy",
   "version": "0.2.1",
   "type": "module",
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+ssh://git@github.com/movogo-io/node-deploy.git"
+  },
   "keywords": [
     "riddance",
     "environment",
