@@ -4,6 +4,8 @@ Millis
 movogo
 nodebuffer
 onwarn
+repoint
+repointed
 subber
 tock
 treeshake

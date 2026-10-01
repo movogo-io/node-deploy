@@ -176,20 +176,20 @@ function assertSingleHost(
 ) {
     const packages = (lock as { packages?: { [path: string]: unknown } }).packages ?? {}
     const hosts = Object.keys(packages).filter(path => hostPathPattern.test(path))
-    const glue = Object.entries(implementations)
-        .map(([pkg, sub]) => `${pkg} -> ${sub.implementation} ${sub.version}`)
-        .join(', ')
     if (hosts.length === 0) {
         throw new Error(
             'No host in the staged lockfile (neither @riddance/host nor @movogo-io/host).',
         )
     }
+    const glue = Object.entries(implementations)
+        .map(([pkg, sub]) => `${pkg} -> ${sub.implementation} ${sub.version}`)
+        .join(', ')
     if (hosts.length !== 1) {
         throw new Error(
             `More than one host in the staged lockfile: ${hosts.join(', ')}. Pin @movogo-io/service and repoint every peer that still names @riddance/service or @riddance/host, so one host instance registers the handlers; glue implementations: ${glue}`,
         )
     }
-    if (!(`node_modules/${hostPackage}` in packages)) {
+    if (!Object.hasOwn(packages, `node_modules/${hostPackage}`)) {
         const servicePackages = Object.entries(dependencies)
             .filter(([name]) => servicePackagePattern.test(name))
             .map(([name, version]) => `${name} ${version}`)
