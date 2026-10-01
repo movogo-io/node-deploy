@@ -123,12 +123,114 @@ type AwsFunction = {
     Architectures: Architectures
 }
 
-export async function getFunctions(
+/**
+Every function whose name starts with `${prefix}-${service}-`, for reading a sibling's
+environment through the glue (`$SAME_AS`, `$PUBLIC_KEY`). It is a prefix match, so
+`staging-rentals-` also lists `staging-rentals-v2-*`: nothing may be created, updated or
+deleted from this list. `getFunctions` is for that, and pays for the exactness.
+*/
+export async function listFunctions(
     context: Context,
     prefix: string,
     service: string,
 ): Promise<AwsFunctionLite[]> {
-    const funcs = []
+    const fnPrefix = `${prefix}-${service}-`.toLowerCase()
+    return (await listFunctionsByPrefix(context, fnPrefix)).map(fn => asLite(fn, fnPrefix))
+}
+
+/**
+The service's own functions, for sync to compare the reflection against: compare() deletes
+whatever is returned here but not reflected, so a prefix match would delete a sibling's
+`staging-rentals-v2-*` under `staging-rentals-`. A candidate is ours when its whole name is
+one the service reflects, or else when the tags createLambda wrote name this service and
+environment. ListFunctions carries no tags, so only an unreflected candidate (a handler the
+service no longer has, or a sibling's function) costs a ListTags call; a deploy that changes
+no handler names makes none. The deploy principal therefore needs `lambda:ListTags` on the
+functions under its prefix, beside the permissions it already has.
+*/
+export async function getFunctions(
+    context: Context,
+    prefix: string,
+    service: string,
+    reflectedNames: string[],
+): Promise<AwsFunctionLite[]> {
+    const fnPrefix = `${prefix}-${service}-`.toLowerCase()
+    const candidates = await listFunctionsByPrefix(context, fnPrefix)
+    const ours = await selectOwnFunctions(candidates, fnPrefix, reflectedNames, {
+        service,
+        environment: prefix,
+        tagsOf: async fn => {
+            // The Lambda control plane throttles at a low shared rate; a throttled or failed
+            // read is retried as createLambda retries its own request.
+            const { Tags } = await jsonResponse<{ Tags?: { [key: string]: string } }>(
+                retry(
+                    context.log,
+                    () =>
+                        awsRequest(
+                            context,
+                            'GET',
+                            'lambda',
+                            `/2017-03-31/tags/${encodeURIComponent(fn.FunctionArn)}`,
+                        ),
+                    r => (r.status === 429 || r.status >= 500 ? 5 : undefined),
+                ),
+                'Error reading tags of function ' + fn.FunctionName,
+            )
+            return Tags
+        },
+        leftAlone: (fn, tags) => {
+            if (typeof tags?.service === 'string' && tags.service !== service) {
+                // A sibling's function under a prefix of ours: expected, and quiet.
+                context.log.trace(`left alone: ${fn.FunctionName} belongs to ${tags.service}`)
+                return
+            }
+            // Untagged, or tagged for another environment under this one's prefix: nobody's
+            // by the rule, so it is never deleted or updated here; an operator decides.
+            context.log.warn(
+                `left alone: ${fn.FunctionName} is not tagged service=${service} environment=${prefix} (tags: ${JSON.stringify(tags ?? {})}); delete or re-tag it by hand if it is a leftover of this service`,
+            )
+        },
+    })
+    return ours.map(fn => asLite(fn, fnPrefix))
+}
+
+/**
+The ownership decision, pure so it can be tested without AWS: a candidate is reflected (ours,
+no lookup), tagged as this service in this environment (ours), or left alone (never deleted or
+updated), with the tags it was judged by. `reflectedNames` are the names of the reflected
+handlers, without the prefix. Tags are read one function at a time: the control plane throttles
+at a low shared rate, and there is rarely more than one unreflected candidate.
+*/
+export async function selectOwnFunctions<T extends { FunctionName: string }>(
+    candidates: T[],
+    fnPrefix: string,
+    reflectedNames: string[],
+    owner: {
+        service: string
+        environment: string
+        tagsOf: (fn: T) => Promise<{ [key: string]: string } | undefined>
+        leftAlone: (fn: T, tags: { [key: string]: string } | undefined) => void
+    },
+): Promise<T[]> {
+    const reflected = new Set(reflectedNames.map(name => `${fnPrefix}${name}`.toLowerCase()))
+    const ours: T[] = []
+    for (const fn of candidates) {
+        if (reflected.has(fn.FunctionName.toLowerCase())) {
+            ours.push(fn)
+            continue
+        }
+        const tags = await owner.tagsOf(fn)
+        if (tags?.service === owner.service && tags.environment === owner.environment) {
+            ours.push(fn)
+            continue
+        }
+        owner.leftAlone(fn, tags)
+    }
+    return ours
+}
+
+async function listFunctionsByPrefix(context: Context, fnPrefix: string) {
+    const funcs: AwsFunction[] = []
     let marker = ''
     for (;;) {
         const page = await jsonResponse<{
@@ -144,23 +246,24 @@ export async function getFunctions(
         }
         marker = `Marker=${encodeURIComponent(page.NextMarker)}`
     }
-    const fnPrefix = `${prefix}-${service}-`.toLowerCase()
-    return funcs
-        .filter(fn => fn.FunctionName.startsWith(fnPrefix))
-        .map(fn => ({
-            id: fn.FunctionArn,
-            name: fn.FunctionName.slice(fnPrefix.length),
-            runtime: fn.Runtime,
-            memory: fn.MemorySize,
-            timeout: fn.Timeout,
-            env: fn.Environment?.Variables ?? {},
-            cpus: fn.Architectures,
-            hash: fn.CodeSha256,
-            size:
-                fn.CodeSize < 1024
-                    ? `${fn.CodeSize} bytes`
-                    : `${Math.ceil(fn.CodeSize / 102.4) / 10} KiB`,
-        }))
+    return funcs.filter(fn => fn.FunctionName.toLowerCase().startsWith(fnPrefix))
+}
+
+function asLite(fn: AwsFunction, fnPrefix: string): AwsFunctionLite {
+    return {
+        id: fn.FunctionArn,
+        name: fn.FunctionName.slice(fnPrefix.length),
+        runtime: fn.Runtime,
+        memory: fn.MemorySize,
+        timeout: fn.Timeout,
+        env: fn.Environment?.Variables ?? {},
+        cpus: fn.Architectures,
+        hash: fn.CodeSha256,
+        size:
+            fn.CodeSize < 1024
+                ? `${fn.CodeSize} bytes`
+                : `${Math.ceil(fn.CodeSize / 102.4) / 10} KiB`,
+    }
 }
 
 type Target = {

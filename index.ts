@@ -22,7 +22,12 @@ export async function deploy(
     const [{ service, implementations, publishTopics, corsSites, env, ...provider }, reflection] =
         await Promise.all([getGlue(path, envName, resolver, glueFile), reflect(path)])
     const [currentState, code] = await Promise.all([
-        getCurrentState(context, envName, service),
+        getCurrentState(
+            context,
+            envName,
+            service,
+            [...reflection.http, ...reflection.timers, ...reflection.events].map(fn => fn.name),
+        ),
         stage(
             context.log,
             stagePath,

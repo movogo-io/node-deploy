@@ -8,10 +8,15 @@ import { assignPolicy, getRole, syncRole } from './services/roles.js'
 import { syncTopics } from './services/sns.js'
 import { syncTriggers } from './services/triggers.js'
 
-export async function getCurrentState(context: Context, prefix: string, service: string) {
+export async function getCurrentState(
+    context: Context,
+    prefix: string,
+    service: string,
+    reflectedNames: string[],
+) {
     const [role, functions, apis] = await Promise.all([
         getRole(context, prefix, service),
-        getFunctions(context, prefix, service),
+        getFunctions(context, prefix, service, reflectedNames),
         getApi(context, prefix, service),
     ])
     return { role, functions, apis }

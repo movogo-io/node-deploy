@@ -67,7 +67,7 @@ export async function localAwsEnv(
 }
 
 export type Context = {
-    log: { trace: (message: string) => void }
+    log: { trace: (message: string) => void; warn: (message: string) => void }
     env: { [key: string]: string | undefined }
 }
 
