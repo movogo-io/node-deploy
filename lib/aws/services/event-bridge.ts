@@ -1,5 +1,5 @@
 import { jsonResponse } from '@riddance/fetch'
-import type { Reflection } from '@riddance/host/reflect'
+import type { Reflection } from '@movogo-io/host/reflect'
 import { awsRequest, type Context } from '../lite.js'
 
 export async function syncEventBridge(

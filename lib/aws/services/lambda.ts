@@ -1,5 +1,5 @@
 import { jsonResponse, okResponse } from '@riddance/fetch'
-import { PackageJsonConfiguration, Reflection, resolveCpu } from '@riddance/host/reflect'
+import { PackageJsonConfiguration, Reflection, resolveCpu } from '@movogo-io/host/reflect'
 import JSZip from 'jszip'
 import { createHash } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'

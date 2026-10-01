@@ -25,9 +25,10 @@ const aws = {
         fn: string,
         revision: string | undefined,
         config: unknown,
+        hostPackage: string,
     ) => `
-import { awsHandler } from '@riddance/aws-host/${type}'
-import * as host from '@riddance/aws-host/${type}'
+import { awsHandler } from '${hostPackage}/${type}'
+import * as host from '${hostPackage}/${type}'
 if('setMeta' in host) {
     host.setMeta(${[
         `'${service.replaceAll("'", "\\'")}'`,
@@ -59,8 +60,18 @@ export async function stage(
 ) {
     stagePath ??= join(tmpdir(), 'riddance', 'stage', service)
     log.trace(`stage dir: ${stagePath}`)
+    // The Lambda entry imports the host from whatever the glue substitutes for the service
+    // package; every glue block is keyed `@riddance/service` until the fleet is repointed.
+    const hostPackage =
+        implementations['@movogo-io/service']?.implementation ??
+        implementations['@riddance/service']?.implementation
+    if (!hostPackage) {
+        throw new Error(
+            'No implementation for @movogo-io/service (or @riddance/service) in the glue; the Lambda entry needs the host package.',
+        )
+    }
     log.trace('staging...')
-    const { functions, hashes, config } = await copyAndPatchProject(
+    const { functions, hashes, config, dependencies } = await copyAndPatchProject(
         log,
         path,
         stagePath,
@@ -69,9 +80,14 @@ export async function stage(
 
     log.trace('syncing dependencies...')
     await install(stagePath)
-    hashes['package-lock.json'] = createHash('sha256')
-        .update(await readFile(join(stagePath, 'package-lock.json')))
-        .digest('base64')
+    const lockFile = await readFile(join(stagePath, 'package-lock.json'))
+    hashes['package-lock.json'] = createHash('sha256').update(lockFile).digest('base64')
+    assertSingleHost(
+        JSON.parse(lockFile.toString('utf-8')),
+        implementations,
+        hostPackage,
+        dependencies,
+    )
 
     let previous: { [source: string]: string } = {}
     try {
@@ -107,6 +123,7 @@ export async function stage(
             ...(await rollupAndMinify(
                 log,
                 aws,
+                hostPackage,
                 path,
                 stagePath,
                 service,
@@ -128,6 +145,7 @@ export async function stage(
     const code = await rollupAndMinify(
         log,
         aws,
+        hostPackage,
         path,
         stagePath,
         service,
@@ -138,6 +156,48 @@ export async function stage(
     )
     await writeFile(join(stagePath, '.hashes.json'), hashesJson)
     return code
+}
+
+const hostPathPattern = /(^|\/)node_modules\/@(riddance|movogo-io)\/host$/u
+const servicePackagePattern = /^@(riddance|movogo-io)\/service$/u
+
+// A service on @movogo-io/service whose peers still pull @riddance/host stages two hosts;
+// the entry then registers its handlers in one and the Lambda is invoked through the other,
+// so nothing is found. Nested copies count: npm puts one under a dependency whose peer range
+// the hoisted host does not satisfy. And the host the entry imports must be the one the
+// staged install contains, which it is not when the glue block is keyed by the service
+// package the service no longer depends on. Everything resolves from the staged lockfile and
+// package.json, so refuse there, before bundling fails on an unresolved import.
+function assertSingleHost(
+    lock: unknown,
+    implementations: { [fromPackage: string]: Implementation },
+    hostPackage: string,
+    dependencies: { [packageName: string]: string },
+) {
+    const packages = (lock as { packages?: { [path: string]: unknown } }).packages ?? {}
+    const hosts = Object.keys(packages).filter(path => hostPathPattern.test(path))
+    const glue = Object.entries(implementations)
+        .map(([pkg, sub]) => `${pkg} -> ${sub.implementation} ${sub.version}`)
+        .join(', ')
+    if (hosts.length === 0) {
+        throw new Error(
+            'No host in the staged lockfile (neither @riddance/host nor @movogo-io/host).',
+        )
+    }
+    if (hosts.length !== 1) {
+        throw new Error(
+            `More than one host in the staged lockfile: ${hosts.join(', ')}. Pin @movogo-io/service and repoint every peer that still names @riddance/service or @riddance/host, so one host instance registers the handlers; glue implementations: ${glue}`,
+        )
+    }
+    if (!(`node_modules/${hostPackage}` in packages)) {
+        const servicePackages = Object.entries(dependencies)
+            .filter(([name]) => servicePackagePattern.test(name))
+            .map(([name, version]) => `${name} ${version}`)
+            .join(', ')
+        throw new Error(
+            `The Lambda entry imports ${hostPackage}, which the staged install does not contain: the service depends on ${servicePackages || 'no service package'} while the glue implementations are keyed ${glue}, so the glue block must be keyed by the service package the service depends on.`,
+        )
+    }
 }
 
 async function copyAndPatchProject(
@@ -161,6 +221,8 @@ async function copyAndPatchProject(
         dependencies: { [packageName: string]: string }
         devDependencies?: unknown
     }
+    // As the service declares them, before the glue substitutes the host for the service package.
+    const dependencies = { ...packageJson.dependencies }
 
     const substitutions = []
     for (const [pkg, sub] of Object.entries(implementations)) {
@@ -184,7 +246,12 @@ async function copyAndPatchProject(
     hashes['package.json'] = createHash('sha256').update(updated).digest('base64')
     await writeFile(packageFile, updated)
 
-    return { functions: serviceFiles.map(f => f.slice(0, -3)), hashes, config: packageJson.config }
+    return {
+        functions: serviceFiles.map(f => f.slice(0, -3)),
+        hashes,
+        config: packageJson.config,
+        dependencies,
+    }
 }
 
 async function mkDirCopyFile(
@@ -249,7 +316,8 @@ type Host = {
         service: string,
         name: string,
         revision: string | undefined,
-        config: object | undefined,
+        config: unknown,
+        hostPackage: string,
     ) => string
     patch?: (bundled: string) => string
 }
@@ -261,6 +329,7 @@ async function rollupAndMinify(
         error: (message: string) => void
     },
     host: Host,
+    hostPackage: string,
     _path: string,
     stagePath: string,
     service: string,
@@ -288,7 +357,7 @@ async function rollupAndMinify(
             },
             plugins: [
                 (virtual as unknown as (options: unknown) => Plugin)({
-                    entry: aws.entry(functionType, service, fn, revision, config),
+                    entry: host.entry(functionType, service, fn, revision, config, hostPackage),
                 }),
                 nodeResolve({
                     exportConditions: ['node'],

@@ -1,6 +1,6 @@
 {
-  "name": "@riddance/deploy",
-  "version": "0.2.1",
+  "name": "@movogo-io/deploy",
+  "version": "0.3.0",
   "type": "module",
   "publishConfig": {
     "registry": "https://npm.pkg.github.com"
@@ -32,7 +32,7 @@
     "deploy": "bin/index.js"
   },
   "dependencies": {
-    "@riddance/host": "0.3.1",
+    "@movogo-io/host": "0.4.0",
     "@riddance/fetch": "0.1.5",
     "@rollup/plugin-commonjs": "29.0.3",
     "@rollup/plugin-json": "6.1.0",

@@ -1,4 +1,4 @@
-import type { Json } from '@riddance/host/lib/context'
+import type { Json } from '@movogo-io/host/lib/context'
 
 // spell-checker: ignore ispresent, CWLI
 

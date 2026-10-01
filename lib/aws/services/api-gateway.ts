@@ -1,5 +1,5 @@
 import { jsonResponse, okResponse, throwOnNotOK } from '@riddance/fetch'
-import { Reflection } from '@riddance/host/reflect'
+import { Reflection } from '@movogo-io/host/reflect'
 import { isDeepStrictEqual } from 'node:util'
 import { compare } from '../diff.js'
 import { type Context, awsRequest, pages, retryConflict } from '../lite.js'

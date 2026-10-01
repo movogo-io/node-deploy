@@ -1,5 +1,5 @@
 import { jsonResponse, okResponse } from '@riddance/fetch'
-import { Reflection } from '@riddance/host/reflect'
+import { Reflection } from '@movogo-io/host/reflect'
 import { randomUUID } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
 import { type Context, awsRequest, isNotFound } from '../lite.js'

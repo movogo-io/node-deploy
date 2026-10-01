@@ -1,4 +1,4 @@
-import { reflect } from '@riddance/host/reflect'
+import { reflect } from '@movogo-io/host/reflect'
 import { Resolver } from './lib/aws/resolve.js'
 import { getCurrentState, sync } from './lib/aws/sync.js'
 import { getGlue } from './lib/glue.js'

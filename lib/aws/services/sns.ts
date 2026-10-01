@@ -1,5 +1,5 @@
 import { jsonResponse } from '@riddance/fetch'
-import type { Reflection } from '@riddance/host/reflect'
+import type { Reflection } from '@movogo-io/host/reflect'
 import { type Context, awsFormRequest } from '../lite.js'
 
 export async function syncTopics(

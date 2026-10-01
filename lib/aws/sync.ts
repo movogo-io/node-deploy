@@ -1,4 +1,4 @@
-import type { Reflection } from '@riddance/host/reflect'
+import type { Reflection } from '@movogo-io/host/reflect'
 import { type Context } from './lite.js'
 import { getApi, syncGateway } from './services/api-gateway.js'
 import { logQueryLink } from './services/cloud-watch.js'
