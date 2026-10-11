@@ -108,7 +108,7 @@ type AwsStatement = {
     Principal: { Service: string }
     Action: string
     Resource: string
-    Condition: unknown
+    Condition?: { ArnLike?: { 'AWS:SourceArn'?: string } }
 }
 
 async function syncTrigger(

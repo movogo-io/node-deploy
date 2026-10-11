@@ -5,7 +5,7 @@ import { logQueryLink } from './services/cloud-watch.js'
 import { syncEventBridge } from './services/event-bridge.js'
 import { getFunctions, syncLambda } from './services/lambda.js'
 import { assignPolicy, getRole, syncRole } from './services/roles.js'
-import { syncTopics } from './services/sns.js'
+import { syncTopics, unsubscribeSurplus } from './services/sns.js'
 import { syncTriggers } from './services/triggers.js'
 
 export async function getCurrentState(
@@ -39,6 +39,8 @@ export async function sync(
     },
 ) {
     const role = await syncRole(context, prefix, service, currentState.role)
+
+    await unsubscribeSurplus(context, prefix, service, currentState.functions, reflection)
 
     const fns = await syncLambda(
         context,

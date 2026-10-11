@@ -30,7 +30,7 @@ describe('deploy', () => {
         assert.deepStrictEqual(log.issues, [])
     }).timeout(30_000)
 
-    it('should follow the handler filter on every redeploy', async () => {
+    it('should follow the handler filter and topic on every redeploy', async () => {
         const log = new Log()
         await deployTestCase(log, 'filtered-a')
         await eventually(async () => {
@@ -44,8 +44,21 @@ describe('deploy', () => {
         await eventually(async () => {
             assert.deepStrictEqual(await filterPolicy(), {})
         })
+        await deployTestCase(log, 'filtered-moved')
+        await eventually(async () => {
+            assert.deepStrictEqual(Object.keys(await subscribers('status-greeting')), [])
+            assert.deepStrictEqual(Object.keys(await subscribers('status-farewell')), [
+                'greet-filter',
+            ])
+        })
+        await deployTestCase(log, 'filtered-renamed')
+        await eventually(async () => {
+            assert.deepStrictEqual(Object.keys(await subscribers('status-farewell')), [
+                'greet-other',
+            ])
+        })
         assert.deepStrictEqual(log.issues, [])
-    }).timeout(180_000)
+    }).timeout(300_000)
 
     it('should deploy big twice', async () => {
         const log = new Log()
@@ -106,8 +119,36 @@ async function retry(fn: () => Promise<void>) {
 }
 
 async function filterPolicy() {
-    const context = { log: new Log(), env: await localAwsEnv(undefined, 'deploy-test') }
-    const region = context.env.AWS_REGION
+    const subscriptionArn = (await subscribers('status-greeting'))['greet-filter']
+    assert.ok(subscriptionArn, 'No subscription of greet-filter.')
+    const {
+        GetSubscriptionAttributesResponse: {
+            GetSubscriptionAttributesResult: { Attributes: attributes },
+        },
+    } = await jsonResponse<{
+        GetSubscriptionAttributesResponse: {
+            GetSubscriptionAttributesResult: { Attributes: { FilterPolicy?: string } }
+        }
+    }>(
+        awsFormRequest(
+            await awsContext(),
+            'POST',
+            'sns',
+            '',
+            new URLSearchParams({
+                Action: 'GetSubscriptionAttributes',
+                Version: '2010-03-31',
+                SubscriptionArn: subscriptionArn,
+            }),
+        ),
+        'Error getting subscription attributes.',
+    )
+    const policy: unknown = JSON.parse(attributes.FilterPolicy ?? '{}')
+    return policy
+}
+
+async function subscribers(topic: string) {
+    const context = await awsContext()
     const {
         GetCallerIdentityResponse: {
             GetCallerIdentityResult: { Account: account },
@@ -143,39 +184,21 @@ async function filterPolicy() {
             new URLSearchParams({
                 Action: 'ListSubscriptionsByTopic',
                 Version: '2010-03-31',
-                TopicArn: `arn:aws:sns:${region}:${account}:deploy-test-status-greeting`,
+                TopicArn: `arn:aws:sns:${context.env.AWS_REGION}:${account}:deploy-test-${topic}`,
             }),
         ),
         'Error listing subscriptions.',
     )
-    const subscription = subscriptions.find(s =>
-        s.Endpoint.endsWith(':function:deploy-test-filtered-greet-filter'),
+    const functionPrefix = ':function:deploy-test-filtered-'
+    return Object.fromEntries(
+        subscriptions
+            .filter(s => s.Endpoint.includes(functionPrefix))
+            .map(s => [s.Endpoint.split(functionPrefix)[1], s.SubscriptionArn]),
     )
-    assert.ok(subscription, 'No subscription of deploy-test-filtered-greet-filter.')
-    const {
-        GetSubscriptionAttributesResponse: {
-            GetSubscriptionAttributesResult: { Attributes: attributes },
-        },
-    } = await jsonResponse<{
-        GetSubscriptionAttributesResponse: {
-            GetSubscriptionAttributesResult: { Attributes: { FilterPolicy?: string } }
-        }
-    }>(
-        awsFormRequest(
-            context,
-            'POST',
-            'sns',
-            '',
-            new URLSearchParams({
-                Action: 'GetSubscriptionAttributes',
-                Version: '2010-03-31',
-                SubscriptionArn: subscription.SubscriptionArn,
-            }),
-        ),
-        'Error getting subscription attributes.',
-    )
-    const policy: unknown = JSON.parse(attributes.FilterPolicy ?? '{}')
-    return policy
+}
+
+async function awsContext() {
+    return { log: new Log(), env: await localAwsEnv(undefined, 'deploy-test') }
 }
 
 // Subscription listing and attributes are eventually consistent, so the assertion is retried,

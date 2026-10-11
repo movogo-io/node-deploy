@@ -3,7 +3,9 @@ import type { EventFilter } from '@movogo-io/host/lib/context'
 import type { Reflection } from '@movogo-io/host/reflect'
 import { setTimeout } from 'node:timers/promises'
 import { isDeepStrictEqual } from 'node:util'
-import { type Context, awsFormRequest } from '../lite.js'
+import { compare } from '../diff.js'
+import { type Context, awsFormRequest, isNotFound } from '../lite.js'
+import { getTriggers } from './triggers.js'
 
 const listingAttemptsMax = 5
 
@@ -55,6 +57,66 @@ export async function syncTopics(
     )
 }
 
+// Deleting a Lambda deletes its policy, the only record of the topics it was subscribed to,
+// so this must run before the surplus functions and statements are removed.
+export async function unsubscribeSurplus(
+    context: Context,
+    prefix: string,
+    service: string,
+    currentFunctions: { id: string; name: string }[],
+    reflection: Reflection,
+) {
+    const [_arn, _aws, _lambda, region, account] = currentFunctions[0]?.id.split(':') ?? []
+    if (!region || !account) {
+        return
+    }
+    const reflectedTopicArn = (e: { topic: string; type: string }) =>
+        `arn:aws:sns:${region}:${account}:${prefix}-${e.topic}-${e.type}`
+    const { surplus: deleted } = compare(
+        [...reflection.http, ...reflection.timers, ...reflection.events],
+        currentFunctions,
+    )
+    const isKept = (fn: { id: string; name: string }, topicArn: string) =>
+        !deleted.includes(fn) &&
+        reflection.events.some(e => e.name === fn.name && reflectedTopicArn(e) === topicArn)
+    const triggers = await getTriggers(context, prefix, service, currentFunctions)
+    const topicArns = new Set([
+        ...triggers.flatMap(t =>
+            (t.statements ?? []).flatMap(statement => {
+                const source = statement.Condition?.ArnLike?.['AWS:SourceArn']
+                if (!source || statement.Principal.Service !== 'sns.amazonaws.com') {
+                    return []
+                }
+                return [source]
+            }),
+        ),
+        ...reflection.events.map(reflectedTopicArn),
+    ])
+    await Promise.all(
+        [...topicArns].map(async topicArn => {
+            const surplus = (await listTopicLambdaSubscriptions(context, topicArn)).flatMap(
+                subscription => {
+                    const fn = currentFunctions.find(f => f.id === subscription.Endpoint)
+                    if (!fn || isKept(fn, topicArn)) {
+                        return []
+                    }
+                    return [{ ...subscription, name: fn.name }]
+                },
+            )
+            await Promise.all(
+                surplus.map(async subscription => {
+                    context.log.trace(`unsubscribing ${subscription.name} from ${topicArn}`)
+                    await sns(
+                        context,
+                        { Action: 'Unsubscribe', SubscriptionArn: subscription.SubscriptionArn },
+                        'Error unsubscribing from topic.',
+                    )
+                }),
+            )
+        }),
+    )
+}
+
 async function createTopic(
     context: Context,
     prefix: string,
@@ -83,12 +145,28 @@ async function createTopic(
     )
 }
 
-async function findSubscription(
+async function findSubscription(context: Context, topicArn: string, endpoint: string) {
+    return (await listLambdaSubscriptions(context, topicArn)).find(s => s.Endpoint === endpoint)
+        ?.SubscriptionArn
+}
+
+// A topic named by a stale statement may since have been deleted by hand.
+async function listTopicLambdaSubscriptions(context: Context, topicArn: string) {
+    try {
+        return await listLambdaSubscriptions(context, topicArn)
+    } catch (e) {
+        if (isNotFound(e)) {
+            return []
+        }
+        throw e
+    }
+}
+
+async function listLambdaSubscriptions(
     context: Context,
     topicArn: string,
-    endpoint: string,
     nextToken?: string,
-): Promise<string | undefined> {
+): Promise<{ Endpoint: string; SubscriptionArn: string }[]> {
     const {
         ListSubscriptionsByTopicResponse: { ListSubscriptionsByTopicResult: page },
     } = await sns<{
@@ -107,14 +185,11 @@ async function findSubscription(
         },
         'Error listing subscriptions.',
     )
-    const found = page.Subscriptions.find(s => s.Protocol === 'lambda' && s.Endpoint === endpoint)
-    if (found) {
-        return found.SubscriptionArn
-    }
+    const subscriptions = page.Subscriptions.filter(s => s.Protocol === 'lambda')
     if (!page.NextToken) {
-        return undefined
+        return subscriptions
     }
-    return await findSubscription(context, topicArn, endpoint, page.NextToken)
+    return [...subscriptions, ...(await listLambdaSubscriptions(context, topicArn, page.NextToken))]
 }
 
 // The listing is eventually consistent, so SNS can refuse a Subscribe as a duplicate of a
