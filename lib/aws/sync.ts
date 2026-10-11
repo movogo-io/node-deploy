@@ -98,7 +98,7 @@ export async function sync(
         await syncTriggers(context, prefix, service, fns, reflection, region, account, gatewayId)
     }
 
-    await syncTopics(context, fns, prefix, service, reflection, region, account)
+    await syncTopics(context, fns, prefix, reflection)
     await syncEventBridge(context, region, account, prefix, service, reflection)
 
     return {

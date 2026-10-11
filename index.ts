@@ -59,7 +59,6 @@ export async function deploy(
     )
 }
 
-// The reflection came from the service's host, which may be older than the deploy's.
 function validateEventFilters(reflection: Reflection) {
     for (const { name, config } of reflection.events) {
         if (!config.filter) {

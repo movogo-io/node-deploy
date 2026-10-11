@@ -32,30 +32,39 @@ describe('deploy', () => {
 
     it('should follow the handler filter and topic on every redeploy', async () => {
         const log = new Log()
+        const topicArnPrefix = await testTopicArnPrefix()
         await deployTestCase(log, 'filtered-a')
         await eventually(async () => {
-            assert.deepStrictEqual(await filterPolicy(), { kind: ['a'] })
+            assert.deepStrictEqual(await filterPolicy(topicArnPrefix), { kind: ['a'] })
         })
         await deployTestCase(log, 'filtered-b')
         await eventually(async () => {
-            assert.deepStrictEqual(await filterPolicy(), { kind: ['b', 'c'], tier: ['gold'] })
+            assert.deepStrictEqual(await filterPolicy(topicArnPrefix), {
+                kind: ['b', 'c'],
+                tier: ['gold'],
+            })
         })
         await deployTestCase(log, 'filtered-none')
         await eventually(async () => {
-            assert.deepStrictEqual(await filterPolicy(), {})
+            assert.deepStrictEqual(await filterPolicy(topicArnPrefix), {})
         })
         await deployTestCase(log, 'filtered-moved')
         await eventually(async () => {
-            assert.deepStrictEqual(Object.keys(await subscribers('status-greeting')), [])
-            assert.deepStrictEqual(Object.keys(await subscribers('status-farewell')), [
-                'greet-filter',
-            ])
+            assert.deepStrictEqual(
+                Object.keys(await subscribers(topicArnPrefix, 'status-greeting')),
+                [],
+            )
+            assert.deepStrictEqual(
+                Object.keys(await subscribers(topicArnPrefix, 'status-farewell')),
+                ['greet-filter'],
+            )
         })
         await deployTestCase(log, 'filtered-renamed')
         await eventually(async () => {
-            assert.deepStrictEqual(Object.keys(await subscribers('status-farewell')), [
-                'greet-other',
-            ])
+            assert.deepStrictEqual(
+                Object.keys(await subscribers(topicArnPrefix, 'status-farewell')),
+                ['greet-other'],
+            )
         })
         assert.deepStrictEqual(log.issues, [])
     }).timeout(300_000)
@@ -118,9 +127,11 @@ async function retry(fn: () => Promise<void>) {
     }
 }
 
-async function filterPolicy() {
-    const subscriptionArn = (await subscribers('status-greeting'))['greet-filter']
-    assert.ok(subscriptionArn, 'No subscription of greet-filter.')
+async function filterPolicy(topicArnPrefix: string) {
+    const subscriptionArn = (await subscribers(topicArnPrefix, 'status-greeting'))['greet-filter']
+    if (!subscriptionArn) {
+        return undefined
+    }
     const {
         GetSubscriptionAttributesResponse: {
             GetSubscriptionAttributesResult: { Attributes: attributes },
@@ -147,7 +158,40 @@ async function filterPolicy() {
     return policy
 }
 
-async function subscribers(topic: string) {
+async function subscribers(topicArnPrefix: string, topic: string) {
+    const {
+        ListSubscriptionsByTopicResponse: {
+            ListSubscriptionsByTopicResult: { Subscriptions: subscriptions },
+        },
+    } = await jsonResponse<{
+        ListSubscriptionsByTopicResponse: {
+            ListSubscriptionsByTopicResult: {
+                Subscriptions: { Endpoint: string; SubscriptionArn: string }[]
+            }
+        }
+    }>(
+        awsFormRequest(
+            await awsContext(),
+            'POST',
+            'sns',
+            '',
+            new URLSearchParams({
+                Action: 'ListSubscriptionsByTopic',
+                Version: '2010-03-31',
+                TopicArn: topicArnPrefix + topic,
+            }),
+        ),
+        'Error listing subscriptions.',
+    )
+    const functionPrefix = ':function:deploy-test-filtered-'
+    return Object.fromEntries(
+        subscriptions
+            .filter(s => s.Endpoint.includes(functionPrefix))
+            .map(s => [s.Endpoint.split(functionPrefix)[1], s.SubscriptionArn]),
+    )
+}
+
+async function testTopicArnPrefix() {
     const context = await awsContext()
     const {
         GetCallerIdentityResponse: {
@@ -165,44 +209,13 @@ async function subscribers(topic: string) {
         ),
         'Error getting account.',
     )
-    const {
-        ListSubscriptionsByTopicResponse: {
-            ListSubscriptionsByTopicResult: { Subscriptions: subscriptions },
-        },
-    } = await jsonResponse<{
-        ListSubscriptionsByTopicResponse: {
-            ListSubscriptionsByTopicResult: {
-                Subscriptions: { Endpoint: string; SubscriptionArn: string }[]
-            }
-        }
-    }>(
-        awsFormRequest(
-            context,
-            'POST',
-            'sns',
-            '',
-            new URLSearchParams({
-                Action: 'ListSubscriptionsByTopic',
-                Version: '2010-03-31',
-                TopicArn: `arn:aws:sns:${context.env.AWS_REGION}:${account}:deploy-test-${topic}`,
-            }),
-        ),
-        'Error listing subscriptions.',
-    )
-    const functionPrefix = ':function:deploy-test-filtered-'
-    return Object.fromEntries(
-        subscriptions
-            .filter(s => s.Endpoint.includes(functionPrefix))
-            .map(s => [s.Endpoint.split(functionPrefix)[1], s.SubscriptionArn]),
-    )
+    return `arn:aws:sns:${context.env.AWS_REGION}:${account}:deploy-test-`
 }
 
 async function awsContext() {
     return { log: new Log(), env: await localAwsEnv(undefined, 'deploy-test') }
 }
 
-// Subscription listing and attributes are eventually consistent, so the assertion is retried,
-// never the deploy.
 async function eventually(assertion: () => Promise<void>) {
     for (let i = 0; ; ++i) {
         try {
