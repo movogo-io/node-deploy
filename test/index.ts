@@ -1,10 +1,10 @@
-import { fetchJson, fetchOK, thrownHasStatus } from '@riddance/fetch'
+import { fetchJson, fetchOK, jsonResponse, thrownHasStatus } from '@riddance/fetch'
 import assert from 'node:assert/strict'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { setTimeout } from 'node:timers/promises'
 import { deploy } from '../index.js'
-import { localAwsEnv } from '../lib/aws/lite.js'
+import { awsFormRequest, localAwsEnv } from '../lib/aws/lite.js'
 import { install } from '../lib/npm.js'
 import { compile } from './lib/compile.js'
 
@@ -29,6 +29,23 @@ describe('deploy', () => {
         await deployTestCase(log, 'tick-tock')
         assert.deepStrictEqual(log.issues, [])
     }).timeout(30_000)
+
+    it('should follow the handler filter on every redeploy', async () => {
+        const log = new Log()
+        await deployTestCase(log, 'filtered-a')
+        await eventually(async () => {
+            assert.deepStrictEqual(await filterPolicy(), { kind: ['a'] })
+        })
+        await deployTestCase(log, 'filtered-b')
+        await eventually(async () => {
+            assert.deepStrictEqual(await filterPolicy(), { kind: ['b', 'c'], tier: ['gold'] })
+        })
+        await deployTestCase(log, 'filtered-none')
+        await eventually(async () => {
+            assert.deepStrictEqual(await filterPolicy(), {})
+        })
+        assert.deepStrictEqual(log.issues, [])
+    }).timeout(180_000)
 
     it('should deploy big twice', async () => {
         const log = new Log()
@@ -81,6 +98,96 @@ async function retry(fn: () => Promise<void>) {
         } catch (e) {
             if (thrownHasStatus(e, 503) && i < 5) {
                 await setTimeout(1000)
+                continue
+            }
+            throw e
+        }
+    }
+}
+
+async function filterPolicy() {
+    const context = { log: new Log(), env: await localAwsEnv(undefined, 'deploy-test') }
+    const region = context.env.AWS_REGION
+    const {
+        GetCallerIdentityResponse: {
+            GetCallerIdentityResult: { Account: account },
+        },
+    } = await jsonResponse<{
+        GetCallerIdentityResponse: { GetCallerIdentityResult: { Account: string } }
+    }>(
+        awsFormRequest(
+            context,
+            'POST',
+            'sts',
+            '',
+            new URLSearchParams({ Action: 'GetCallerIdentity', Version: '2011-06-15' }),
+        ),
+        'Error getting account.',
+    )
+    const {
+        ListSubscriptionsByTopicResponse: {
+            ListSubscriptionsByTopicResult: { Subscriptions: subscriptions },
+        },
+    } = await jsonResponse<{
+        ListSubscriptionsByTopicResponse: {
+            ListSubscriptionsByTopicResult: {
+                Subscriptions: { Endpoint: string; SubscriptionArn: string }[]
+            }
+        }
+    }>(
+        awsFormRequest(
+            context,
+            'POST',
+            'sns',
+            '',
+            new URLSearchParams({
+                Action: 'ListSubscriptionsByTopic',
+                Version: '2010-03-31',
+                TopicArn: `arn:aws:sns:${region}:${account}:deploy-test-status-greeting`,
+            }),
+        ),
+        'Error listing subscriptions.',
+    )
+    const subscription = subscriptions.find(s =>
+        s.Endpoint.endsWith(':function:deploy-test-filtered-greet-filter'),
+    )
+    assert.ok(subscription, 'No subscription of deploy-test-filtered-greet-filter.')
+    const {
+        GetSubscriptionAttributesResponse: {
+            GetSubscriptionAttributesResult: { Attributes: attributes },
+        },
+    } = await jsonResponse<{
+        GetSubscriptionAttributesResponse: {
+            GetSubscriptionAttributesResult: { Attributes: { FilterPolicy?: string } }
+        }
+    }>(
+        awsFormRequest(
+            context,
+            'POST',
+            'sns',
+            '',
+            new URLSearchParams({
+                Action: 'GetSubscriptionAttributes',
+                Version: '2010-03-31',
+                SubscriptionArn: subscription.SubscriptionArn,
+            }),
+        ),
+        'Error getting subscription attributes.',
+    )
+    const policy: unknown = JSON.parse(attributes.FilterPolicy ?? '{}')
+    return policy
+}
+
+// Subscription listing and attributes are eventually consistent, so the assertion is retried,
+// never the deploy.
+async function eventually(assertion: () => Promise<void>) {
+    for (let i = 0; ; ++i) {
+        try {
+            await assertion()
+            return
+        } catch (e) {
+            if (i < 10) {
+                await setTimeout(2000)
                 continue
             }
             throw e

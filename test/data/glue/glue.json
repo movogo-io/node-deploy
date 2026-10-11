@@ -14,6 +14,14 @@
     "greeting": {
       "publish": ["status"]
     },
-    "subber": {}
+    "subber": {},
+    "filtered": {
+      "implementations": {
+        "@movogo-io/service": {
+          "implementation": "@movogo-io/aws-host",
+          "version": "0.3.0"
+        }
+      }
+    }
   }
 }

@@ -1,4 +1,5 @@
-import { reflect } from '@movogo-io/host/reflect'
+import { validateEventFilter } from '@movogo-io/host/attributes'
+import { type Reflection, reflect } from '@movogo-io/host/reflect'
 import { Resolver } from './lib/aws/resolve.js'
 import { getCurrentState, sync } from './lib/aws/sync.js'
 import { getGlue } from './lib/glue.js'
@@ -21,6 +22,7 @@ export async function deploy(
     const resolver = new Resolver(context)
     const [{ service, implementations, publishTopics, corsSites, env, ...provider }, reflection] =
         await Promise.all([getGlue(path, envName, resolver, glueFile), reflect(path)])
+    validateEventFilters(reflection)
     const [currentState, code] = await Promise.all([
         getCurrentState(
             context,
@@ -55,4 +57,18 @@ export async function deploy(
         Object.fromEntries(code.map(c => [c.fn, c.code])),
         provider,
     )
+}
+
+// The reflection came from the service's host, which may be older than the deploy's.
+function validateEventFilters(reflection: Reflection) {
+    for (const { name, config } of reflection.events) {
+        if (!config.filter) {
+            continue
+        }
+        try {
+            validateEventFilter(config.filter)
+        } catch (e) {
+            throw new Error(`Invalid filter on event handler ${name}.`, { cause: e })
+        }
+    }
 }
