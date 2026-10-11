@@ -3,7 +3,7 @@ import { Reflection } from '@movogo-io/host/reflect'
 import { randomUUID } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
 import { compare } from '../diff.js'
-import { type Context, awsRequest, isNotFound } from '../lite.js'
+import { type Context, awsRequest, isNotFound, retry } from '../lite.js'
 
 export async function syncTriggers(
     context: Context,
@@ -159,11 +159,16 @@ export async function getTriggers(
                         JSON.parse(
                             (
                                 await jsonResponse<{ Policy: string }>(
-                                    awsRequest(
-                                        context,
-                                        'GET',
-                                        'lambda',
-                                        `/2015-03-31/functions/${prefix}-${service}-${fn.name}/policy/`,
+                                    retry(
+                                        context.log,
+                                        () =>
+                                            awsRequest(
+                                                context,
+                                                'GET',
+                                                'lambda',
+                                                `/2015-03-31/functions/${prefix}-${service}-${fn.name}/policy/`,
+                                            ),
+                                        r => (r.status === 429 || r.status >= 500 ? 5 : undefined),
                                     ),
                                     'Error getting triggers.',
                                 )

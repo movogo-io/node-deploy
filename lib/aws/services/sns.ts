@@ -66,12 +66,13 @@ export async function unsubscribeSurplus(
     triggers: AwsTrigger[],
     reflection: Reflection,
 ) {
-    if (triggers.length === 0) {
+    const [first] = triggers
+    if (!first) {
         return
     }
-    const [_arn, _aws, _lambda, region, account] = triggers[0]?.id.split(':') ?? []
+    const [_arn, _aws, _lambda, region, account] = first.id.split(':', 5)
     if (!region || !account) {
-        throw new Error('Weird')
+        throw new Error(`Cannot read region and account from function ARN ${first.id}.`)
     }
     const { surplus: deleted } = compare(
         [...reflection.http, ...reflection.timers, ...reflection.events],
