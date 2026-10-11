@@ -6,7 +6,7 @@ import { syncEventBridge } from './services/event-bridge.js'
 import { getFunctions, syncLambda } from './services/lambda.js'
 import { assignPolicy, getRole, syncRole } from './services/roles.js'
 import { syncTopics, unsubscribeSurplus } from './services/sns.js'
-import { syncTriggers } from './services/triggers.js'
+import { getTriggers, syncTriggers } from './services/triggers.js'
 
 export async function getCurrentState(
     context: Context,
@@ -14,12 +14,22 @@ export async function getCurrentState(
     service: string,
     reflectedNames: string[],
 ) {
-    const [role, functions, apis] = await Promise.all([
+    const [role, { functions, triggers }, apis] = await Promise.all([
         getRole(context, prefix, service),
-        getFunctions(context, prefix, service, reflectedNames),
+        getFunctionsWithTriggers(context, prefix, service, reflectedNames),
         getApi(context, prefix, service),
     ])
-    return { role, functions, apis }
+    return { role, functions, triggers, apis }
+}
+
+async function getFunctionsWithTriggers(
+    context: Context,
+    prefix: string,
+    service: string,
+    reflectedNames: string[],
+) {
+    const functions = await getFunctions(context, prefix, service, reflectedNames)
+    return { functions, triggers: await getTriggers(context, prefix, service, functions) }
 }
 
 export type CurrentState = Awaited<ReturnType<typeof getCurrentState>>
@@ -40,7 +50,7 @@ export async function sync(
 ) {
     const role = await syncRole(context, prefix, service, currentState.role)
 
-    await unsubscribeSurplus(context, prefix, service, currentState.functions, reflection)
+    await unsubscribeSurplus(context, prefix, currentState.triggers, reflection)
 
     const fns = await syncLambda(
         context,
@@ -73,6 +83,7 @@ export async function sync(
             prefix,
             service,
             fns,
+            currentState.triggers,
             reflection,
             region,
             account,
@@ -95,7 +106,17 @@ export async function sync(
               )
 
     if (!existingGatewayId) {
-        await syncTriggers(context, prefix, service, fns, reflection, region, account, gatewayId)
+        await syncTriggers(
+            context,
+            prefix,
+            service,
+            fns,
+            currentState.triggers,
+            reflection,
+            region,
+            account,
+            gatewayId,
+        )
     }
 
     await syncTopics(context, fns, prefix, reflection)

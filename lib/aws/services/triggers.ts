@@ -2,6 +2,7 @@ import { jsonResponse, okResponse } from '@riddance/fetch'
 import { Reflection } from '@movogo-io/host/reflect'
 import { randomUUID } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
+import { compare } from '../diff.js'
 import { type Context, awsRequest, isNotFound } from '../lite.js'
 
 export async function syncTriggers(
@@ -9,12 +10,16 @@ export async function syncTriggers(
     prefix: string,
     service: string,
     functions: { id: string; name: string }[],
+    triggers: AwsTrigger[],
     reflection: Reflection,
     region: string,
     account: string,
     apiGatewayId: string | undefined,
 ) {
-    const currentTriggers = await getTriggers(context, prefix, service, functions)
+    const { existing: currentTriggers } = compare(
+        [...reflection.http, ...reflection.timers, ...reflection.events],
+        triggers,
+    )
     await Promise.all([
         ...reflection.http.map(async fn => {
             if (!apiGatewayId) {

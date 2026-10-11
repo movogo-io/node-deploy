@@ -4,7 +4,7 @@ import type { Reflection } from '@movogo-io/host/reflect'
 import { isDeepStrictEqual } from 'node:util'
 import { compare } from '../diff.js'
 import { type Context, awsFormRequest, isNotFound } from '../lite.js'
-import { getTriggers } from './triggers.js'
+import type { AwsTrigger } from './triggers.js'
 
 export async function syncTopics(
     context: Context,
@@ -63,27 +63,25 @@ export async function syncTopics(
 export async function unsubscribeSurplus(
     context: Context,
     prefix: string,
-    service: string,
-    currentFunctions: { id: string; name: string }[],
+    triggers: AwsTrigger[],
     reflection: Reflection,
 ) {
-    if (currentFunctions.length === 0) {
+    if (triggers.length === 0) {
         return
     }
-    const [_arn, _aws, _lambda, region, account] = currentFunctions[0]?.id.split(':') ?? []
+    const [_arn, _aws, _lambda, region, account] = triggers[0]?.id.split(':') ?? []
     if (!region || !account) {
         throw new Error('Weird')
     }
     const { surplus: deleted } = compare(
         [...reflection.http, ...reflection.timers, ...reflection.events],
-        currentFunctions,
+        triggers,
     )
-    const isKept = (fn: { id: string; name: string }, topicArn: string) =>
+    const isKept = (fn: AwsTrigger, topicArn: string) =>
         !deleted.includes(fn) &&
         reflection.events.some(
             e => e.name === fn.name && arnOfTopic(region, account, prefix, e) === topicArn,
         )
-    const triggers = await getTriggers(context, prefix, service, currentFunctions)
     const topicArns = new Set([
         ...triggers.flatMap(t =>
             (t.statements ?? []).flatMap(statement => {
@@ -104,7 +102,7 @@ export async function unsubscribeSurplus(
         [...topicArns].map(async topicArn => {
             const surplus = (await listLambdaSubscriptions(context, topicArn)).flatMap(
                 subscription => {
-                    const fn = currentFunctions.find(f => f.id === subscription.Endpoint)
+                    const fn = triggers.find(t => t.id === subscription.Endpoint)
                     if (!fn || isKept(fn, topicArn)) {
                         return []
                     }
