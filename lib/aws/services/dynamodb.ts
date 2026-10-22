@@ -90,8 +90,29 @@ function dynamoRequest<T>(context: Context, action: string, body: unknown) {
                     `DynamoDB_20120810.${action}`,
                     'application/x-amz-json-1.0',
                 ),
-            r => (r.status >= 500 ? 5 : undefined),
+            async r => (r.status >= 500 || (await isThrottled(r)) ? 6 : undefined),
+            retries => 250 * 2 ** retries + Math.random() * 250,
         ),
         `Error calling DynamoDB ${action}`,
     )
 }
+
+// DynamoDB answers throttling with 400, told apart from a real client error only by its type.
+export async function isThrottled(response: Response) {
+    if (response.status !== 400) {
+        return false
+    }
+    const body: unknown = await response.clone().json()
+    if (typeof body !== 'object' || body === null || !('__type' in body)) {
+        return false
+    }
+    return (
+        typeof body.__type === 'string' && throttlingErrors.has(body.__type.split('#').at(-1) ?? '')
+    )
+}
+
+const throttlingErrors = new Set([
+    'ThrottlingException',
+    'RequestLimitExceeded',
+    'ProvisionedThroughputExceededException',
+])

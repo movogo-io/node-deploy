@@ -215,16 +215,17 @@ function subdomain(service: string, region: string) {
 export async function retry<T extends { url: string; text: () => Promise<string> }>(
     log: Context['log'],
     request: () => Promise<T>,
-    when: (response: T) => number | undefined,
+    when: (response: T) => number | undefined | Promise<number | undefined>,
+    delayMs = (_retries: number) => 500,
 ) {
     for (let retries = 0; ; ++retries) {
         const response = await request()
-        const maxRetries = when(response)
+        const maxRetries = await when(response)
         if (maxRetries === undefined || maxRetries <= retries) {
             return response
         }
         log.trace(`  retrying #${retries + 1}... (${response.url} -> ${await response.text()})`)
-        await setTimeout(500)
+        await setTimeout(delayMs(retries))
     }
 }
 
