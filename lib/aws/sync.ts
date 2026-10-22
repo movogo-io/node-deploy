@@ -2,6 +2,7 @@ import type { Reflection } from '@movogo-io/host/reflect'
 import { type Context } from './lite.js'
 import { getApi, syncGateway } from './services/api-gateway.js'
 import { logQueryLink } from './services/cloud-watch.js'
+import { syncTimeToLive } from './services/dynamodb.js'
 import { syncEventBridge } from './services/event-bridge.js'
 import { getFunctions, syncLambda } from './services/lambda.js'
 import { assignPolicy, getRole, syncRole } from './services/roles.js'
@@ -121,6 +122,7 @@ export async function sync(
 
     await syncTopics(context, fns, prefix, reflection)
     await syncEventBridge(context, region, account, prefix, service, reflection)
+    await syncTimeToLive(context, prefix, service)
 
     return {
         logLink: logQueryLink(

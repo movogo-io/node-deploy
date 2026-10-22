@@ -132,7 +132,12 @@ export async function assignPolicy(
                             Effect: 'Allow',
                             Resource: `arn:aws:dynamodb:${region}:${account}:table/${prefix}.${service}.*`,
                             Action: [
+                                // @movogo-io/dynamodb-docs creates a table on first write, waits
+                                // for it to be active, then enables TTL and, when asked, backups.
                                 'dynamodb:CreateTable',
+                                'dynamodb:DescribeTable',
+                                'dynamodb:UpdateTimeToLive',
+                                'dynamodb:UpdateContinuousBackups',
                                 'dynamodb:BatchGetItem',
                                 'dynamodb:ConditionCheckItem',
                                 'dynamodb:PutItem',
