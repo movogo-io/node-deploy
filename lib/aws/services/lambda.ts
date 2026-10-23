@@ -427,14 +427,14 @@ function getRuntime({ config }: Target) {
     }
 }
 
-function memorySize({ config, method }: Target) {
-    if (method && !config.compute && !config.memory) {
-        return 256
-    }
+export function memorySize({ config }: Pick<Target, 'config'>) {
     if (config.compute === 'high' || config.memory === 'high') {
         return 3008
     }
-    return 128
+    if (config.compute || config.memory) {
+        return 128
+    }
+    return 512
 }
 
 function lambdaArchitecture({ config, method }: Target) {

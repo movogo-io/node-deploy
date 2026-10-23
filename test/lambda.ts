@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { selectOwnFunctions } from '../lib/aws/services/lambda.js'
+import { memorySize, selectOwnFunctions } from '../lib/aws/services/lambda.js'
 
 // The decision that keeps compare() from deleting a sibling's functions: pure, so the live
 // suite is not the only place it is exercised.
@@ -84,5 +84,31 @@ describe('own functions', () => {
         )
 
         assert.deepStrictEqual(ours, [])
+    })
+})
+
+describe('memory size', () => {
+    it('gives a function that names no compute or memory 512 MB', () => {
+        assert.deepStrictEqual(
+            [memorySize({ config: {} }), memorySize({ config: { timeout: 900 } })],
+            [512, 512],
+        )
+    })
+
+    it('gives a function asking for high compute or memory 3008 MB', () => {
+        assert.deepStrictEqual(
+            [
+                memorySize({ config: { compute: 'high' } }),
+                memorySize({ config: { memory: 'high' } }),
+            ],
+            [3008, 3008],
+        )
+    })
+
+    it('gives a function asking for low compute or memory 128 MB', () => {
+        assert.deepStrictEqual(
+            [memorySize({ config: { compute: 'low' } }), memorySize({ config: { memory: 'low' } })],
+            [128, 128],
+        )
     })
 })
