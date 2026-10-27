@@ -4,7 +4,7 @@ import { getApi, syncGateway } from './services/api-gateway.js'
 import { logQueryLink } from './services/cloud-watch.js'
 import { syncTimeToLive } from './services/dynamodb.js'
 import { syncEventBridge } from './services/event-bridge.js'
-import { type Concurrency, checkConcurrency, syncConcurrency } from './services/concurrency.js'
+import { type Concurrency, desiredConcurrency, syncConcurrency } from './services/concurrency.js'
 import { getFunctions, syncLambda } from './services/lambda.js'
 import { assignPolicy, getRole, syncRole } from './services/roles.js'
 import { syncTopics, unsubscribeSurplus } from './services/sns.js'
@@ -56,8 +56,7 @@ export async function sync(
     const functionNames = [...reflection.http, ...reflection.events, ...reflection.timers].map(
         fn => fn.name,
     )
-    const concurrency = provider.aws?.concurrency ?? {}
-    checkConcurrency(functionNames, concurrency)
+    const concurrency = desiredConcurrency(reflection, provider.aws?.concurrency ?? {})
 
     const role = await syncRole(context, prefix, service, currentState.role)
 
