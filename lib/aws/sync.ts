@@ -6,13 +6,7 @@ import { syncTimeToLive } from './services/dynamodb.js'
 import { syncEventBridge } from './services/event-bridge.js'
 import { type Concurrency, desiredConcurrency, syncConcurrency } from './services/concurrency.js'
 import { getFunctions, syncLambda } from './services/lambda.js'
-import {
-    type PolicyStatement,
-    assignPolicy,
-    checkPolicyStatements,
-    getRole,
-    syncRole,
-} from './services/roles.js'
+import { assignPolicy, checkPolicyStatements, getRole, syncRole } from './services/roles.js'
 import { syncTopics, unsubscribeSurplus } from './services/sns.js'
 import { getTriggers, syncTriggers } from './services/triggers.js'
 
@@ -54,7 +48,7 @@ export async function sync(
     code: { [name: string]: string },
     provider: {
         aws?: {
-            policyStatements?: PolicyStatement[]
+            policyStatements?: unknown
             concurrency?: Concurrency
         }
     },
