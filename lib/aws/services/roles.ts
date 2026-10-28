@@ -102,7 +102,7 @@ export async function assignPolicy(
     region: string,
     account: string,
     publishTopics: string[],
-    additionalStatements: { Effect: string; Resource: string; Action: string[] }[],
+    additionalStatements: PolicyStatement[],
 ) {
     context.log.trace('assigning policy')
     await okResponse(
@@ -164,18 +164,97 @@ export async function assignPolicy(
                             Action: ['sns:Publish'],
                             Resource: `arn:aws:sns:${region}:${account}:${prefix}-${topic}-*`,
                         })),
-                        ...additionalStatements.map(as => ({
-                            Effect: as.Effect,
-                            Resource: as.Resource.replaceAll('$REGION', () => region).replaceAll(
-                                '$ACCOUNT',
-                                () => account,
-                            ),
-                            Action: as.Action,
-                        })),
+                        ...additionalStatements.map(as => renderStatement(as, region, account)),
                     ],
                 }),
             }).toString()}`,
         ),
         'Error assigning policy',
     )
+}
+
+export type PolicyStatement = {
+    Effect: string
+    Resource: string | string[]
+    Action: string[]
+    Condition?: PolicyCondition
+}
+
+type PolicyCondition = { [operator: string]: { [key: string]: string | string[] } }
+
+/**
+Refuses a glue statement whose Condition is not operator → key → string or string[], before
+anything is deployed, rather than leaving IAM to reject the role policy halfway through.
+*/
+export function checkPolicyStatements(statements: PolicyStatement[]) {
+    for (const [index, { Condition: condition }] of statements.entries()) {
+        if (condition === undefined) {
+            continue
+        }
+        const at = `aws.policyStatements[${index}].Condition`
+        if (!isObject(condition) || Object.keys(condition).length === 0) {
+            throw new Error(
+                `${at} must name at least one operator, not ${JSON.stringify(condition)}.`,
+            )
+        }
+        for (const [operator, keys] of Object.entries(condition)) {
+            if (!isObject(keys) || Object.keys(keys).length === 0) {
+                throw new Error(
+                    `${at}.${operator} must name at least one condition key, not ${JSON.stringify(keys)}.`,
+                )
+            }
+            for (const [key, value] of Object.entries(keys)) {
+                if (!isConditionValue(value)) {
+                    throw new Error(
+                        `${at}.${operator}.${key} must be a string or a non-empty array of strings, not ${JSON.stringify(value)}.`,
+                    )
+                }
+            }
+        }
+    }
+    return statements
+}
+
+// A statement without a Condition renders exactly as before it could carry one, so no existing
+// role's policy changes on the next deploy.
+export function renderStatement(
+    { Effect, Resource, Action, Condition }: PolicyStatement,
+    region: string,
+    account: string,
+) {
+    const substitute = (value: string) =>
+        value.replaceAll('$REGION', () => region).replaceAll('$ACCOUNT', () => account)
+    const statement = {
+        Effect,
+        Resource: typeof Resource === 'string' ? substitute(Resource) : Resource.map(substitute),
+        Action,
+    }
+    if (Condition === undefined) {
+        return statement
+    }
+    return {
+        ...statement,
+        Condition: Object.fromEntries(
+            Object.entries(Condition).map(([operator, keys]) => [
+                operator,
+                Object.fromEntries(
+                    Object.entries(keys).map(([key, value]) => [
+                        key,
+                        typeof value === 'string' ? substitute(value) : value.map(substitute),
+                    ]),
+                ),
+            ]),
+        ),
+    }
+}
+
+function isObject(value: unknown): value is { [key: string]: unknown } {
+    return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function isConditionValue(value: unknown) {
+    if (typeof value === 'string') {
+        return true
+    }
+    return Array.isArray(value) && value.length !== 0 && value.every(v => typeof v === 'string')
 }

@@ -6,7 +6,13 @@ import { syncTimeToLive } from './services/dynamodb.js'
 import { syncEventBridge } from './services/event-bridge.js'
 import { type Concurrency, desiredConcurrency, syncConcurrency } from './services/concurrency.js'
 import { getFunctions, syncLambda } from './services/lambda.js'
-import { assignPolicy, getRole, syncRole } from './services/roles.js'
+import {
+    type PolicyStatement,
+    assignPolicy,
+    checkPolicyStatements,
+    getRole,
+    syncRole,
+} from './services/roles.js'
 import { syncTopics, unsubscribeSurplus } from './services/sns.js'
 import { getTriggers, syncTriggers } from './services/triggers.js'
 
@@ -48,7 +54,7 @@ export async function sync(
     code: { [name: string]: string },
     provider: {
         aws?: {
-            policyStatements?: { Effect: string; Resource: string; Action: string[] }[]
+            policyStatements?: PolicyStatement[]
             concurrency?: Concurrency
         }
     },
@@ -57,6 +63,7 @@ export async function sync(
         fn => fn.name,
     )
     const concurrency = desiredConcurrency(reflection, provider.aws?.concurrency ?? {})
+    const policyStatements = checkPolicyStatements(provider.aws?.policyStatements ?? [])
 
     const role = await syncRole(context, prefix, service, currentState.role)
 
@@ -77,15 +84,7 @@ export async function sync(
         throw new Error('Weird')
     }
 
-    await assignPolicy(
-        context,
-        prefix,
-        service,
-        region,
-        account,
-        publishTopics,
-        provider.aws?.policyStatements ?? [],
-    )
+    await assignPolicy(context, prefix, service, region, account, publishTopics, policyStatements)
 
     const existingGatewayId = currentState.apis.api?.apiId
     if (existingGatewayId) {
