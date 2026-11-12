@@ -4,21 +4,152 @@ Deploys a Riddance service to AWS: every root entrypoint becomes one Lambda func
 its dependencies into a single `index.js`.
 
 ```sh
-deploy <path> <stage> <glue file>
+deploy [<path>] <stage> [<glue file>] [--stage-dir <dir>]
+deploy destroy <stage> --glue <file> [--service <name>] [--dry-run]
+deploy --help
 ```
 
-## The account a stage lives in
+`<path>` defaults to the current directory and the glue file to `../glue/glue.json` beside it.
+
+## Upgrading from 0.5.0
+
+Check each point before the first deploy with 0.6.0.
+
+**Credentials**
+
+- `[default]` is never used. The profile is the one `AWS_PROFILE` names, else the one named like
+  the stage. If neither exists the deploy fails. Before, a stage without a profile deployed as
+  `[default]`.
+- `AWS_PROFILE` wins over the stage name. `AWS_PROFILE=staging deploy dev` deploys the stage `dev`
+  with the credentials of `staging`. Unset it, or set it on purpose.
+- Keys in the environment (`AWS_ACCESS_KEY_ID` with `AWS_SECRET_ACCESS_KEY`) win over any profile.
+- Half a key pair in the environment is refused. Set both variables or neither.
+- A role profile (`role_arn`, SSO) is resolved with `aws configure export-credentials`, so the AWS
+  CLI must be on `PATH`. A profile with static keys and no `role_arn` needs no CLI.
+
+**Command line**
+
+- An unknown flag, a flag without its value and a surplus argument are refused. Before, they were
+  read as a path or a stage.
+- A stage name holds letters, digits, `-` and `_` only, and starts with a letter or digit. A path,
+  an empty name or a name with a dot is refused.
+- The build directory moved from `$TMPDIR/riddance/stage/<service>` to
+  `$TMPDIR/riddance/stage/<stage>/<service>`. The first deploy of each service builds from scratch.
+  `--stage-dir <dir>` builds in `<dir>/<service>` instead.
+
+**Timers**
+
+- A deploy no longer enables a disabled timer rule. Each rule keeps its state.
+- The rule of a timer removed from the code is deleted with its target.
+- The deploying identity now also needs `events:ListRules`, `events:ListTagsForResource`,
+  `events:ListTargetsByRule`, `events:RemoveTargets` and `events:DeleteRule`.
+
+**Policy statements in the glue** (`services.<service>.aws.policyStatements`)
+
+- A statement with a key other than `Effect`, `Action`, `Resource` and `Condition` is refused.
+  This hits every statement that carries `Principal`: 0.5.0 dropped that key silently. Remedy:
+  delete the `Principal` key from the statement in the glue. The deployed role does not change,
+  because the key never reached it.
+- A statement that still holds a `$` after substitution is refused. Only `$REGION`, `$ACCOUNT` and
+  `$ENV` are substituted. Remedy: use one of the three, or write the value out.
+
+**The glue's top-level `aws` object**
+
+- It takes `accountId` and `slots` only. Any other key is refused, a misspelt `accountID` too.
+- A glue file without `aws.accountId` still deploys, with a warning that is repeated as the last
+  line. Add the account id to end the warning.
+- A deploy to a slot (`w1` to `w9`) is refused unless the glue file lists the slot in `aws.slots`.
+
+## Credentials
+
+In this order: the key pair in the environment; the profile `AWS_PROFILE` names; the profile named
+like the stage. The region is `AWS_REGION`, else `AWS_DEFAULT_REGION`, else the profile's; without
+one the deploy fails. The deploy prints the caller's ARN before it changes anything.
+
+## The account a stage lives in, and its slots
 
 ```json
-{ "aws": { "accountId": "123456789012" }, "implementations": {}, "services": {} }
+{
+  "aws": { "accountId": "123456789012", "slots": ["w1", "w2"] },
+  "implementations": {},
+  "services": {}
+}
 ```
 
-A glue file is per stage, and states the AWS account of its stage once, in `aws.accountId` at its
-top level, as a string. Before a deploy changes anything it asks STS which account its credentials
-reach, and refuses when that is another one, naming both accounts and the profile the credentials
-came from. A glue file without `aws.accountId` deploys with a warning. `deploy destroy` refuses
-such a file: it takes the glue file as `--glue <file>` and deletes nothing without a declared,
-matching account.
+A glue file is per stage. `aws` at its top level holds two settings:
+
+- **`accountId`**: the AWS account of the stage, as a string of twelve digits. Before a deploy
+  changes anything it asks STS which account its credentials reach. If that is another account it
+  refuses, and names both accounts and the profile. A glue file without `accountId` deploys with a
+  warning, printed at the start and again as the last line. `destroy` refuses such a file.
+- **`slots`**: the slots this account may hold, each one of `w1` to `w9`. A deploy to a slot and a
+  `destroy` of a slot are refused unless the glue file they were given lists that slot. A glue
+  file without `slots` permits no slot. Stages that are not slots (`dev`, `staging`, `production`)
+  need no entry.
+
+Any other key in that object is refused.
+
+## The build directory
+
+A service is built in `$TMPDIR/riddance/stage/<stage>/<service>`, so one service can be deployed to
+two stages at the same time. With `--stage-dir <dir>` it is built in `<dir>/<service>`. Several
+stages may share one `<dir>` to reuse a build, but not at the same time. `<dir>` may not be `/`,
+the home directory, an existing file, or a directory inside or around the project.
+
+## Timer rules
+
+An existing rule keeps its state, enabled or disabled. A new rule is disabled only when every
+other timer rule of the service on that stage is disabled; otherwise it is enabled. A timer removed
+from the code has its rule and target deleted.
+
+## Policy statements and the permissions boundary
+
+```json
+{
+  "services": {
+    "files": {
+      "aws": {
+        "policyStatements": [
+          { "Effect": "Allow", "Action": "s3:GetObject", "Resource": "arn:aws:s3:::$ENV-files/*" }
+        ],
+        "permissionsBoundary": "arn:aws:iam::123456789012:policy/$ENV-boundary"
+      }
+    }
+  }
+}
+```
+
+- **`policyStatements`** are added to the role of the service's functions. A statement holds
+  `Effect`, `Action`, `Resource` and optionally `Condition`. In `Resource` and in `Condition`
+  values, `$REGION`, `$ACCOUNT` and `$ENV` stand for the region, the account and the stage.
+- **`permissionsBoundary`** is the ARN of the IAM policy set as permissions boundary on a role the
+  deploy creates. Only `$ENV` is substituted there. An existing role is not changed. The environment
+  variable `DEPLOY_PERMISSIONS_BOUNDARY` sets the same. If both are set they must name the same
+  policy, or the deploy is refused.
+
+## Destroying a slot
+
+```sh
+deploy destroy w1 --glue ../glue/glue.w1.json --dry-run
+deploy destroy w1 --glue ../glue/glue.w1.json
+deploy destroy w1 --glue ../glue/glue.w1.json --service crew
+```
+
+`destroy` removes what deploys made on one slot. The stage must be one of `w1` to `w9`; any other
+stage is removed by hand.
+
+- `--glue <file>` is required. The file must list the slot in `aws.slots` and declare
+  `aws.accountId`, and the credentials must reach that account. Otherwise nothing is requested or
+  deleted. A missing file is reported in one line with its path.
+- It deletes timer rules and their targets, functions, APIs, topics and subscriptions, roles and
+  log groups. Each is deleted only when its name starts with the stage and its `environment` tag
+  names the stage.
+- It never deletes tables, layer versions, anything untagged, or anything whose name and tag
+  disagree. What it skips is printed with the reason.
+- The whole list is printed first, and only that list is deleted.
+- `--dry-run` stops after printing the list.
+- `--service <name>` takes only what belongs to that service, and keeps the topics.
+- It stops at the first delete that fails. Run it again to continue.
 
 ## Per-function settings in the glue
 
