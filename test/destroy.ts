@@ -705,7 +705,6 @@ describe('destroy', () => {
                 [
                     'skip function w1-crew-v2-get: tagged service=crew-v2',
                     'skip function w1-crew-borrowed: tagged environment=dev',
-                    'skip log group /aws/lambda/w1-crew-retired: no function of crew to be deleted has that name',
                     'skip log group /aws/lambda/w1-crew-v2-get: its function is skipped',
                     'skip log group /aws/lambda/w1-crew-borrowed: its function is skipped',
                 ],
@@ -720,7 +719,58 @@ describe('destroy', () => {
                 'iam DeleteRolePolicy {"RoleName":"w1-crew-role","PolicyName":"w1-crew-policy"}',
                 'iam DeleteRole {"RoleName":"w1-crew-role"}',
                 'logs DeleteLogGroup {"logGroupName":"/aws/lambda/w1-crew-get"}',
+                'logs DeleteLogGroup {"logGroupName":"/aws/lambda/w1-crew-retired"}',
             ])
+        } finally {
+            aws.restore()
+        }
+    })
+
+    it('takes the log groups a failed run of one service left, but none named like a sibling service', async () => {
+        const aws = stubAws(call => {
+            if (call.service === 'lambda' && call.path === '/2015-03-31/functions/') {
+                return {
+                    Functions: [
+                        {
+                            FunctionName: 'w1-crew-v2-get',
+                            FunctionArn:
+                                'arn:aws:lambda:eu-north-1:123456789012:function:w1-crew-v2-get',
+                        },
+                    ],
+                    // eslint-disable-next-line unicorn/no-null -- as the API ends a listing
+                    NextMarker: null,
+                }
+            }
+            if (call.action === 'DescribeLogGroups') {
+                return {
+                    logGroups: [
+                        { logGroupName: '/aws/lambda/w1-crew-get' },
+                        { logGroupName: '/aws/lambda/w1-crew-sweep' },
+                        { logGroupName: '/aws/lambda/w1-crew-v2-get' },
+                        { logGroupName: '/aws/lambda/w1-crew-v2-retired' },
+                    ],
+                }
+            }
+            return answer(call)
+        })
+        const { lines, context: logged } = logging()
+        try {
+            await destroy(logged, 'w1', { service: 'crew', dryRun: false, glueFile })
+
+            assert.deepStrictEqual(
+                lines.filter(line => line.startsWith('skip log group ')),
+                [
+                    'skip log group /aws/lambda/w1-crew-v2-get: its function is skipped',
+                    'skip log group /aws/lambda/w1-crew-v2-retired: its function is gone, and it is named like one of crew-v2',
+                ],
+            )
+            assert.deepStrictEqual(
+                aws.calls.filter(call => call.action === 'DeleteLogGroup').map(summary),
+                [
+                    'logs DeleteLogGroup {"logGroupName":"/aws/lambda/w1-crew-get"}',
+                    'logs DeleteLogGroup {"logGroupName":"/aws/lambda/w1-crew-sweep"}',
+                ],
+            )
         } finally {
             aws.restore()
         }

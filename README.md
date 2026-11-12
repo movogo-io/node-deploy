@@ -148,7 +148,12 @@ stage is removed by hand.
   disagree. What it skips is printed with the reason.
 - The whole list is printed first, and only that list is deleted.
 - `--dry-run` stops after printing the list.
-- `--service <name>` takes only what belongs to that service, and keeps the topics.
+- A log group carries no tags. It goes when its function goes or is already gone, and stays when
+  its function is skipped.
+- `--service <name>` takes only what belongs to that service, and keeps the topics. A log group
+  whose function is gone is taken by name: it stays only when it is named like one of another
+  service that starts the same (`crew-v2` beside `crew`) and still has a tagged function on the
+  slot.
 - It stops at the first delete that fails. Run it again to continue.
 
 ## Per-function settings in the glue

@@ -6,7 +6,7 @@ import { rollup, RollupCache, SourceMap, type Plugin } from '@rollup/wasm-node'
 import { createHash } from 'node:crypto'
 import { mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { homedir, tmpdir } from 'node:os'
-import { dirname, isAbsolute, join, relative, resolve as resolvePath } from 'node:path'
+import { dirname, isAbsolute, join, relative, resolve as resolvePath, sep } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
 import zlib from 'node:zlib'
 // eslint-disable-next-line camelcase
@@ -86,7 +86,7 @@ function inside(base: string, directory: string, what: string) {
 
 function isWithin(base: string, directory: string) {
     const fromBase = relative(base, directory)
-    return !fromBase.startsWith('..') && !isAbsolute(fromBase)
+    return fromBase !== '..' && !fromBase.startsWith(`..${sep}`) && !isAbsolute(fromBase)
 }
 
 async function isDirectoryOrAbsent(directory: string) {

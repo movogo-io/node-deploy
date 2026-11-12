@@ -121,7 +121,7 @@ export async function planDestroy(
         functions.plan,
         messaging.topics,
         await planRoles(context, stage, service),
-        await planLogGroups(context, service, scope, functions.plan),
+        await planLogGroups(context, stage, service, scope, functions),
     ]
     return {
         deletions: parts.flatMap(part => part.deletions),
@@ -301,13 +301,16 @@ async function planFunctions(
 ) {
     const plan: Plan = { deletions: [], skipped: [] }
     const arns = new Set<string>()
+    const siblings = new Set<string>()
     for (const fn of await listAccountFunctions(context)) {
         if (!fn.FunctionName.startsWith(scope)) {
             continue
         }
-        const reason =
-            misnamed(fn.FunctionName) ??
-            mismatch(await getFunctionTags(context, fn), stage, service)
+        const tags = isDeployName(fn.FunctionName) ? await getFunctionTags(context, fn) : undefined
+        if (tags?.service !== undefined && tags.service !== service) {
+            siblings.add(tags.service)
+        }
+        const reason = misnamed(fn.FunctionName) ?? mismatch(tags, stage, service)
         if (reason) {
             plan.skipped.push({ kind: 'function', name: fn.FunctionName, reason })
             continue
@@ -315,7 +318,7 @@ async function planFunctions(
         plan.deletions.push({ kind: 'function', name: fn.FunctionName })
         arns.add(fn.FunctionArn)
     }
-    return { plan, arns }
+    return { plan, arns, siblings }
 }
 
 async function planTopics(
@@ -408,20 +411,21 @@ async function roleMismatch(
     return undefined
 }
 
-// Lambda makes log groups, untagged, so a log group goes with its function: not when the
-// function was skipped, and for one service only those of its planned functions, since the
-// prefix also takes those of a service whose name starts the same.
+// Log groups are untagged, so one goes by its function: kept when the function is skipped, taken
+// when it is planned or gone. For one service, one named like a sibling's the prefix showed stays.
 async function planLogGroups(
     context: Context,
+    stage: string,
     service: string | undefined,
     scope: string,
-    functions: Plan,
+    functions: { plan: Plan; siblings: Set<string> },
 ) {
     const plan: Plan = { deletions: [], skipped: [] }
-    const planned = new Set(functions.deletions.map(fn => `/aws/lambda/${fn.name}`))
-    const kept = new Set(functions.skipped.map(fn => `/aws/lambda/${fn.name}`))
+    const planned = new Set(functions.plan.deletions.map(fn => `/aws/lambda/${fn.name}`))
+    const kept = new Set(functions.plan.skipped.map(fn => `/aws/lambda/${fn.name}`))
+    const siblings = service === undefined ? [] : [...functions.siblings]
     for (const name of await listLogGroups(context, `/aws/lambda/${scope}`)) {
-        const reason = logGroupKept(name, service, planned, kept)
+        const reason = logGroupKept(name, stage, planned, kept, siblings)
         if (reason) {
             plan.skipped.push({ kind: 'log group', name, reason })
             continue
@@ -433,15 +437,17 @@ async function planLogGroups(
 
 function logGroupKept(
     name: string,
-    service: string | undefined,
+    stage: string,
     planned: Set<string>,
     kept: Set<string>,
+    siblings: string[],
 ) {
     if (kept.has(name)) {
         return 'its function is skipped'
     }
-    if (service !== undefined && !planned.has(name)) {
-        return `no function of ${service} to be deleted has that name`
+    const sibling = siblings.find(s => name.startsWith(`/aws/lambda/${stage}-${s}-`))
+    if (sibling !== undefined && !planned.has(name)) {
+        return `its function is gone, and it is named like one of ${sibling}`
     }
     return misnamed(name.slice('/aws/lambda/'.length))
 }

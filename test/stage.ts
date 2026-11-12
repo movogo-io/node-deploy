@@ -44,6 +44,10 @@ describe('build directory', () => {
         await assert.rejects(buildDirectory(join(project, '..'), 'w1', 'rentals', project), {
             message: `--stage-dir ${join(project, '..')} overlaps the project being deployed.`,
         })
+        await assert.rejects(
+            buildDirectory(project, 'w1', 'rentals', join(project, '..dotted-project')),
+            { message: `--stage-dir ${project} overlaps the project being deployed.` },
+        )
     })
 
     it('builds each stage of a service in a directory of its own', async () => {
@@ -65,8 +69,14 @@ describe('build directory', () => {
                 await buildDirectory('/builds/base', 'w1', 'rentals', project),
                 await buildDirectory('/builds/base', 'w2', 'rentals', project),
                 await buildDirectory('/builds/base', 'w2', '@movogo-io/rentals', project),
+                await buildDirectory('/builds/base', 'w2', '..rentals', project),
             ],
-            ['/builds/base/rentals', '/builds/base/rentals', '/builds/base/@movogo-io/rentals'],
+            [
+                '/builds/base/rentals',
+                '/builds/base/rentals',
+                '/builds/base/@movogo-io/rentals',
+                '/builds/base/..rentals',
+            ],
         )
     })
 })
