@@ -101,7 +101,7 @@ A glue file is per stage. `aws` at its top level holds two settings:
 
 Any other key in that object is refused.
 
-A slot differs from every other stage in two ways: a deploy to it creates a new
+A deploy to a slot differs from a deploy to any other stage in two ways: it creates a new
 [timer rule](#timer-rules) disabled, and it reserves
 [no concurrency](#per-function-settings-in-the-glue).
 
@@ -114,12 +114,12 @@ the home directory, an existing file, or a directory inside or around the projec
 
 ## Timer rules
 
-An existing rule keeps its state, enabled or disabled. A new rule is disabled only when every
-other timer rule of the service on that stage is disabled; otherwise it is enabled. A timer removed
-from the code has its rule and target deleted.
+An existing rule keeps its state, enabled or disabled. A new rule is enabled, unless the service
+has other timer rules on that stage and every one of them is disabled; then it is disabled too.
+A timer removed from the code has its rule and target deleted.
 
-**On a slot** (`w1` to `w9`) a new rule is always created disabled, whatever state the service's
-other rules have. A slot is built by many deploys before its tables and data are ready, and a
+**On a slot** (`w1` to `w9`) a new rule is instead always created disabled, whatever state the
+service's other rules have. A slot is built by many deploys before its tables and data are ready, and a
 timer firing in between would run against a half-built stage. A deploy that creates rules there
 says so in one line (`new timers of … created disabled (…): … is a slot`). Enable them once the
 slot is complete, with `aws events enable-rule --name <stage>-<service>-<timer>`; from then on
