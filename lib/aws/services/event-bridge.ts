@@ -1,5 +1,6 @@
 import { jsonResponse, okResponse } from '@riddance/fetch'
 import type { Reflection } from '@movogo-io/host/reflect'
+import { isSlot } from '../../glue.js'
 import { awsRequest, type Context } from '../lite.js'
 import { selectOwnFunctions } from './lambda.js'
 
@@ -7,6 +8,9 @@ import { selectOwnFunctions } from './lambda.js'
 Makes the stage's schedule rules of this service what the reflected timers are. A rule keeps the
 state it has: PutRule without a State enables the rule, which would switch a stage's timers back
 on with every deploy. A timer the code no longer has loses its rule and target.
+
+A slot is built by many deploys before its tables and data are there, so a rule created on one
+starts disabled; whoever completes the slot enables its timers.
 */
 export async function syncEventBridge(
     context: Context,
@@ -16,15 +20,19 @@ export async function syncEventBridge(
     service: string,
     reflection: Pick<Reflection, 'timers'>,
 ) {
-    const { put, remove } = ruleChanges(
-        reflection.timers,
-        await getOwnRules(
-            context,
-            prefix,
-            service,
-            reflection.timers.map(fn => fn.name),
-        ),
+    const current = await getOwnRules(
+        context,
+        prefix,
+        service,
+        reflection.timers.map(fn => fn.name),
     )
+    const { put, remove } = ruleChanges(reflection.timers, current, prefix)
+    const created = put.filter(timer => current.every(rule => rule.name !== timer.name))
+    if (isSlot(prefix) && created.length !== 0) {
+        context.log.warn(
+            `new timers of ${service} created disabled (${created.map(timer => timer.name).join(', ')}): ${prefix} is a slot, and a slot's timers stay off until they are enabled`,
+        )
+    }
     for (const name of remove) {
         await deleteRule(context, name, `${prefix}-${service}-${name}`)
     }
@@ -38,14 +46,17 @@ export async function syncEventBridge(
 /**
 A new rule takes the state the service's other rules on the stage have, so a stage whose timers
 are switched off does not start one with a deploy. Where they differ it is enabled: one rule
-disabled by hand must not keep every later timer from ever running.
+disabled by hand must not keep every later timer from ever running. On a slot a new rule is
+disabled whatever the others have; an existing one keeps its state there too, so timers enabled
+on a finished slot survive its redeploys.
 */
 export function ruleChanges(
     timers: { name: string; schedule: string }[],
     current: { name: string; state: string }[],
+    stage: string,
 ) {
     const allDisabled = current.length !== 0 && current.every(rule => rule.state === 'DISABLED')
-    const stateOfNew = allDisabled ? 'DISABLED' : 'ENABLED'
+    const stateOfNew = allDisabled || isSlot(stage) ? 'DISABLED' : 'ENABLED'
     return {
         put: timers.map(({ name, schedule }) => ({
             name,

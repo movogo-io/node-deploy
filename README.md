@@ -89,6 +89,10 @@ A glue file is per stage. `aws` at its top level holds two settings:
 
 Any other key in that object is refused.
 
+A slot differs from every other stage in two ways: a deploy to it creates a new
+[timer rule](#timer-rules) disabled, and it reserves
+[no concurrency](#per-function-settings-in-the-glue).
+
 ## The build directory
 
 A service is built in `$TMPDIR/riddance/stage/<stage>/<service>`, so one service can be deployed to
@@ -101,6 +105,14 @@ the home directory, an existing file, or a directory inside or around the projec
 An existing rule keeps its state, enabled or disabled. A new rule is disabled only when every
 other timer rule of the service on that stage is disabled; otherwise it is enabled. A timer removed
 from the code has its rule and target deleted.
+
+**On a slot** (`w1` to `w9`) a new rule is always created disabled, whatever state the service's
+other rules have. A slot is built by many deploys before its tables and data are ready, and a
+timer firing in between would run against a half-built stage. A deploy that creates rules there
+says so in one line (`new timers of … created disabled (…): … is a slot`). Enable them once the
+slot is complete, with `aws events enable-rule --name <stage>-<service>-<timer>`; from then on
+each rule keeps its state like on any other stage, so redeploys leave an enabled timer enabled.
+A removed timer's rule and target are deleted on a slot too.
 
 ## Policy statements and the permissions boundary
 
