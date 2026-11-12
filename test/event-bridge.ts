@@ -456,6 +456,100 @@ describe('timer rules', () => {
         }
     })
 
+    it('keeps the state of a rule that the listing returns on a later page', async () => {
+        for (const { stage, state } of [
+            { stage: 'w1', state: 'ENABLED' },
+            { stage: 'dev', state: 'DISABLED' },
+        ]) {
+            const warnings: string[] = []
+            const aws = stubAws(({ action, parameters: { NextToken: next } }) => {
+                switch (action) {
+                    case 'ListRules':
+                        return next === 'second'
+                            ? {
+                                  Rules: [
+                                      { Name: `${stage}-crew-remind`, Arn: 'arn', State: state },
+                                  ],
+                              }
+                            : {
+                                  Rules: [
+                                      { Name: `${stage}-crew-sweep`, Arn: 'arn', State: 'ENABLED' },
+                                  ],
+                                  NextToken: 'second',
+                              }
+                    case 'PutRule':
+                        return { RuleArn: 'arn:rule' }
+                    default:
+                        return { FailedEntryCount: 0 }
+                }
+            })
+            try {
+                await syncEventBridge(
+                    {
+                        ...context,
+                        log: {
+                            ...context.log,
+                            warn: message => {
+                                warnings.push(message)
+                            },
+                        },
+                    },
+                    'eu-north-1',
+                    '123456789012',
+                    stage,
+                    'crew',
+                    {
+                        timers: [
+                            { name: 'sweep', schedule: '0 3 * * *', config: {} },
+                            { name: 'remind', schedule: '0 * * * *', config: {} },
+                        ],
+                    },
+                )
+
+                assert.deepStrictEqual(
+                    aws.calls
+                        .filter(call => ['ListRules', 'PutRule'].includes(call.action ?? ''))
+                        .map(({ action, parameters }) => ({
+                            action,
+                            ...parameters,
+                            Tags: undefined,
+                        })),
+                    [
+                        {
+                            action: 'ListRules',
+                            NamePrefix: `${stage}-crew-`,
+                            Tags: undefined,
+                        },
+                        {
+                            action: 'ListRules',
+                            NamePrefix: `${stage}-crew-`,
+                            NextToken: 'second',
+                            Tags: undefined,
+                        },
+                        {
+                            action: 'PutRule',
+                            Name: `${stage}-crew-sweep`,
+                            ScheduleExpression: 'cron(0 3 * * ? *)',
+                            State: 'ENABLED',
+                            Tags: undefined,
+                        },
+                        {
+                            action: 'PutRule',
+                            Name: `${stage}-crew-remind`,
+                            ScheduleExpression: 'cron(0 * * * ? *)',
+                            State: state,
+                            Tags: undefined,
+                        },
+                    ],
+                    stage,
+                )
+                assert.deepStrictEqual(warnings, [], stage)
+            } finally {
+                aws.restore()
+            }
+        }
+    })
+
     it('lists the targets of a rule to the last page', async () => {
         const aws = stubAws(({ parameters: { NextToken: next } }) =>
             next === 'second'
