@@ -28,6 +28,12 @@ export async function resolveCredentials(
 ): Promise<AwsEnv> {
     const { env } = sources
     const profile = profileFor(env, stage)
+    const half = halfKey(env)
+    if (half) {
+        throw new Error(
+            `The environment holds ${half}. Set both or neither: half a key is not passed over in favour of profile ${profile}.`,
+        )
+    }
     const regionGiven = region ?? env.AWS_REGION ?? env.AWS_DEFAULT_REGION
     if (env.AWS_ACCESS_KEY_ID && env.AWS_SECRET_ACCESS_KEY) {
         return {
@@ -47,7 +53,9 @@ export async function resolveCredentials(
         )
     }
     const AWS_REGION = regionGiven ?? settings.region ?? noRegion(profile)
-    if (settings.aws_access_key_id && settings.aws_secret_access_key) {
+    // The CLI assumes the role of a profile that names one even when the profile holds keys too
+    // (they are then the role's source), so the keys alone would be another, wider identity.
+    if (!settings.role_arn && settings.aws_access_key_id && settings.aws_secret_access_key) {
         return {
             AWS_REGION,
             AWS_ACCESS_KEY_ID: settings.aws_access_key_id,
@@ -56,6 +64,16 @@ export async function resolveCredentials(
         }
     }
     return { AWS_REGION, ...parseExported(await sources.exportCredentials(profile), profile) }
+}
+
+function halfKey(env: CredentialSources['env']) {
+    if (env.AWS_ACCESS_KEY_ID && !env.AWS_SECRET_ACCESS_KEY) {
+        return 'AWS_ACCESS_KEY_ID without AWS_SECRET_ACCESS_KEY'
+    }
+    if (env.AWS_SECRET_ACCESS_KEY && !env.AWS_ACCESS_KEY_ID) {
+        return 'AWS_SECRET_ACCESS_KEY without AWS_ACCESS_KEY_ID'
+    }
+    return undefined
 }
 
 function profileFor(env: CredentialSources['env'], stage: string) {
@@ -115,6 +133,15 @@ function parseExported(output: string, profile: string) {
     ) {
         throw new Error(
             `aws configure export-credentials gave no access key for profile ${profile}.`,
+        )
+    }
+    if (
+        'Expiration' in exported &&
+        typeof exported.Expiration === 'string' &&
+        new Date(exported.Expiration).getTime() < Date.now()
+    ) {
+        throw new Error(
+            `aws configure export-credentials gave credentials for profile ${profile} that expired at ${exported.Expiration}.`,
         )
     }
     return {

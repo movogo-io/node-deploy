@@ -70,6 +70,47 @@ region = eu-north-1
         )
     })
 
+    it('refuses half a key in the environment instead of passing it over', async () => {
+        await assert.rejects(
+            resolveCredentials(undefined, 'dev', {
+                env: { ...paths, AWS_ACCESS_KEY_ID: 'env-id', AWS_SESSION_TOKEN: 'env-token' },
+                readFile,
+                exportCredentials,
+            }),
+            {
+                message:
+                    'The environment holds AWS_ACCESS_KEY_ID without AWS_SECRET_ACCESS_KEY. Set both or neither: half a key is not passed over in favour of profile dev.',
+            },
+        )
+        await assert.rejects(
+            resolveCredentials(undefined, 'dev', {
+                env: { ...paths, AWS_SECRET_ACCESS_KEY: 'env-secret' },
+                readFile,
+                exportCredentials,
+            }),
+            {
+                message:
+                    /^The environment holds AWS_SECRET_ACCESS_KEY without AWS_ACCESS_KEY_ID\./u,
+            },
+        )
+    })
+
+    it('keeps a session token of the environment out of the keys of a profile', async () => {
+        assert.deepStrictEqual(
+            await resolveCredentials(undefined, 'dev', {
+                env: { ...paths, AWS_SESSION_TOKEN: 'stale-env-token' },
+                readFile,
+                exportCredentials,
+            }),
+            {
+                AWS_REGION: 'eu-north-1',
+                AWS_ACCESS_KEY_ID: 'dev-id',
+                AWS_SECRET_ACCESS_KEY: 'dev-secret',
+                AWS_SESSION_TOKEN: 'dev-token',
+            },
+        )
+    })
+
     it('reads the profile named like the stage', async () => {
         assert.deepStrictEqual(
             await resolveCredentials(undefined, 'dev', { env: paths, readFile, exportCredentials }),
@@ -150,7 +191,7 @@ region = eu-north-1
                             AccessKeyId: 'role-id',
                             SecretAccessKey: 'role-secret',
                             SessionToken: 'role-token',
-                            Expiration: '2026-11-12T20:00:00+00:00',
+                            Expiration: '2999-01-01T00:00:00+00:00',
                         }),
                     )
                 },
@@ -163,6 +204,59 @@ region = eu-north-1
             },
         )
         assert.deepStrictEqual(exportedFor, ['w1'])
+    })
+
+    it('assumes the role of a profile that holds keys as well, as the CLI does', async () => {
+        const exportedFor: string[] = []
+        assert.deepStrictEqual(
+            await resolveCredentials(undefined, 'w2', {
+                env: paths,
+                readFile: () =>
+                    Promise.resolve(`
+[w2]
+aws_access_key_id = user-id
+aws_secret_access_key = user-secret
+role_arn = arn:aws:iam::123456789012:role/slot-runner-w2
+source_profile = w2
+region = eu-north-1
+`),
+                exportCredentials: profile => {
+                    exportedFor.push(profile)
+                    return Promise.resolve(
+                        JSON.stringify({ AccessKeyId: 'role-id', SecretAccessKey: 'role-secret' }),
+                    )
+                },
+            }),
+            {
+                AWS_REGION: 'eu-north-1',
+                AWS_ACCESS_KEY_ID: 'role-id',
+                AWS_SECRET_ACCESS_KEY: 'role-secret',
+                AWS_SESSION_TOKEN: undefined,
+            },
+        )
+        assert.deepStrictEqual(exportedFor, ['w2'])
+    })
+
+    it('refuses exported credentials that have expired', async () => {
+        await assert.rejects(
+            resolveCredentials(undefined, 'w1', {
+                env: paths,
+                readFile,
+                exportCredentials: () =>
+                    Promise.resolve(
+                        JSON.stringify({
+                            AccessKeyId: 'role-id',
+                            SecretAccessKey: 'role-secret',
+                            SessionToken: 'role-token',
+                            Expiration: '2020-01-01T00:00:00+00:00',
+                        }),
+                    ),
+            }),
+            {
+                message:
+                    'aws configure export-credentials gave credentials for profile w1 that expired at 2020-01-01T00:00:00+00:00.',
+            },
+        )
     })
 
     it('never quotes what the CLI exported when it cannot be read', async () => {
