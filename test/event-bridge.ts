@@ -1,5 +1,9 @@
 import assert from 'node:assert/strict'
-import { ruleChanges, syncEventBridge } from '../lib/aws/services/event-bridge.js'
+import {
+    listRuleTargetIds,
+    ruleChanges,
+    syncEventBridge,
+} from '../lib/aws/services/event-bridge.js'
 import { context, stubAws } from './lib/aws.js'
 
 describe('timer rules', () => {
@@ -189,6 +193,19 @@ describe('timer rules', () => {
             assert.deepStrictEqual(warnings, [
                 'left alone: rule w1-crew-by-hand is not tagged service=crew environment=w1 (tags: {}); delete or re-tag it by hand if it is a leftover of this service',
             ])
+        } finally {
+            aws.restore()
+        }
+    })
+
+    it('lists the targets of a rule to the last page', async () => {
+        const aws = stubAws(({ parameters: { NextToken: next } }) =>
+            next === 'second'
+                ? { Targets: [{ Id: 'b' }] }
+                : { Targets: [{ Id: 'a' }], NextToken: 'second' },
+        )
+        try {
+            assert.deepStrictEqual(await listRuleTargetIds(context, 'w1-crew-sweep'), ['a', 'b'])
         } finally {
             aws.restore()
         }

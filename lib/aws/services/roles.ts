@@ -152,70 +152,102 @@ async function createRole(
 }
 
 export async function listRoleNames(context: Context) {
-    const names: string[] = []
+    const roles = await iamList(context, 'ListRoles', {}, 'Roles', 'listing roles')
+    return roles.map(role => textOf(role, 'RoleName', 'a role'))
+}
+
+export async function getRoleTags(context: Context, roleName: string) {
+    const tags = await iamList(
+        context,
+        'ListRoleTags',
+        { RoleName: roleName },
+        'Tags',
+        `reading tags of role ${roleName}`,
+    )
+    return Object.fromEntries(
+        tags.map(tag => [textOf(tag, 'Key', 'a tag'), textOf(tag, 'Value', 'a tag')]),
+    )
+}
+
+export async function listRolePolicyNames(context: Context, roleName: string) {
+    const names = await iamList(
+        context,
+        'ListRolePolicies',
+        { RoleName: roleName },
+        'PolicyNames',
+        `listing policies of role ${roleName}`,
+    )
+    return names.map(name => {
+        if (typeof name !== 'string') {
+            throw new TypeError(`IAM named a policy of role ${roleName} ${JSON.stringify(name)}.`)
+        }
+        return name
+    })
+}
+
+export async function listAttachedPolicyNames(context: Context, roleName: string) {
+    const attached = await iamList(
+        context,
+        'ListAttachedRolePolicies',
+        { RoleName: roleName },
+        'AttachedPolicies',
+        `listing managed policies of role ${roleName}`,
+    )
+    return attached.map(policy => textOf(policy, 'PolicyName', 'a managed policy'))
+}
+
+/**
+Every page of an IAM listing, or an error: a listing cut short would make a plan that looks
+complete, so an answer of another shape, or one truncated without a marker, is refused.
+*/
+async function iamList(
+    context: Context,
+    action: string,
+    parameters: { [key: string]: string },
+    list: string,
+    doing: string,
+) {
+    const items: unknown[] = []
     for (let marker: string | undefined; ;) {
-        const {
-            ListRolesResponse: { ListRolesResult: page },
-        } = await iam<{
-            ListRolesResponse: {
-                ListRolesResult: {
-                    Roles: { RoleName: string }[]
-                    IsTruncated: boolean
-                    Marker: string | null
-                }
-            }
-        }>(context, { Action: 'ListRoles', ...(marker && { Marker: marker }) }, 'listing roles')
-        names.push(...page.Roles.map(role => role.RoleName))
-        if (!page.IsTruncated || !page.Marker) {
-            return names
+        const body = await iam<unknown>(
+            context,
+            { Action: action, ...parameters, ...(marker && { Marker: marker }) },
+            doing,
+        )
+        const page = member(member(body, `${action}Response`), `${action}Result`)
+        // IAM answers null for an empty list; a missing one is an answer of another shape.
+        const listed = member(page, list) === null ? [] : member(page, list)
+        if (!isObject(page) || !isList(listed)) {
+            throw new TypeError(`IAM gave no ${list} when ${doing}.`)
+        }
+        items.push(...listed)
+        if (!page.IsTruncated) {
+            return items
+        }
+        if (typeof page.Marker !== 'string' || !page.Marker || page.Marker === marker) {
+            throw new Error(`IAM cut the list short without a way to continue when ${doing}.`)
         }
         marker = page.Marker
     }
 }
 
-export async function getRoleTags(context: Context, roleName: string) {
-    const {
-        ListRoleTagsResponse: {
-            ListRoleTagsResult: { Tags: tags },
-        },
-    } = await iam<{
-        ListRoleTagsResponse: {
-            ListRoleTagsResult: { Tags: { Key: string; Value: string }[] | null }
-        }
-    }>(context, { Action: 'ListRoleTags', RoleName: roleName }, `reading tags of role ${roleName}`)
-    return Object.fromEntries((tags ?? []).map(tag => [tag.Key, tag.Value]))
+function isList(value: unknown): value is unknown[] {
+    return Array.isArray(value)
 }
 
-export async function listRolePolicyNames(context: Context, roleName: string) {
-    const {
-        ListRolePoliciesResponse: {
-            ListRolePoliciesResult: { PolicyNames: names },
-        },
-    } = await iam<{
-        ListRolePoliciesResponse: { ListRolePoliciesResult: { PolicyNames: string[] | null } }
-    }>(
-        context,
-        { Action: 'ListRolePolicies', RoleName: roleName },
-        `listing policies of role ${roleName}`,
-    )
-    return names ?? []
+function member(value: unknown, key: string) {
+    if (!isObject(value)) {
+        return undefined
+    }
+    return value[key]
 }
 
-export async function listAttachedPolicyNames(context: Context, roleName: string) {
-    const {
-        ListAttachedRolePoliciesResponse: {
-            ListAttachedRolePoliciesResult: { AttachedPolicies: attached },
-        },
-    } = await iam<{
-        ListAttachedRolePoliciesResponse: {
-            ListAttachedRolePoliciesResult: { AttachedPolicies: { PolicyName: string }[] | null }
-        }
-    }>(
-        context,
-        { Action: 'ListAttachedRolePolicies', RoleName: roleName },
-        `listing managed policies of role ${roleName}`,
-    )
-    return (attached ?? []).map(policy => policy.PolicyName)
+function textOf(value: unknown, key: string, what: string) {
+    const text = member(value, key)
+    if (typeof text !== 'string') {
+        throw new TypeError(`IAM gave ${what} without ${key}: ${JSON.stringify(value)}.`)
+    }
+    return text
 }
 
 export async function deleteRolePolicy(context: Context, roleName: string, policyName: string) {

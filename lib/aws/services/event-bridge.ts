@@ -154,13 +154,20 @@ export async function getRuleTags(context: Context, rule: { Name: string; Arn: s
 }
 
 export async function listRuleTargetIds(context: Context, fullName: string) {
-    const { Targets: targets } = await events<{ Targets: { Id: string }[] }>(
-        context,
-        'ListTargetsByRule',
-        { Rule: fullName },
-        `listing targets of rule ${fullName}`,
-    )
-    return targets.map(target => target.Id)
+    const ids = []
+    for (let next: string | undefined; ;) {
+        const page = await events<{ Targets: { Id: string }[]; NextToken?: string }>(
+            context,
+            'ListTargetsByRule',
+            { Rule: fullName, NextToken: next },
+            `listing targets of rule ${fullName}`,
+        )
+        ids.push(...page.Targets.map(target => target.Id))
+        if (!page.NextToken) {
+            return ids
+        }
+        next = page.NextToken
+    }
 }
 
 export async function removeRuleTargets(context: Context, fullName: string, ids: string[]) {

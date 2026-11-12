@@ -2,9 +2,14 @@ import assert from 'node:assert/strict'
 import {
     checkPolicyStatements,
     createRoleParameters,
+    getRoleTags,
+    listAttachedPolicyNames,
+    listRoleNames,
+    listRolePolicyNames,
     permissionsBoundary,
     renderStatement,
 } from '../lib/aws/services/roles.js'
+import { context, stubAws } from './lib/aws.js'
 
 describe('policy statements', () => {
     it('refuses a statement without Allow or Deny', () => {
@@ -419,5 +424,119 @@ describe('permissions boundary', () => {
                 'Tags.member.3.Value': 'crew',
             },
         )
+    })
+})
+
+describe('role listings', () => {
+    it('refuses a list of roles cut short without a marker', async () => {
+        const aws = stubAws(() => ({
+            ListRolesResponse: {
+                ListRolesResult: { Roles: [{ RoleName: 'w1-crew-role' }], IsTruncated: true },
+            },
+        }))
+        try {
+            await assert.rejects(listRoleNames(context), {
+                message: 'IAM cut the list short without a way to continue when listing roles.',
+            })
+        } finally {
+            aws.restore()
+        }
+    })
+
+    it('refuses an answer that holds no list', async () => {
+        const aws = stubAws(({ action }) => ({
+            [`${action}Response`]: { [`${action}Result`]: { IsTruncated: false } },
+        }))
+        try {
+            await assert.rejects(listRoleNames(context), {
+                message: 'IAM gave no Roles when listing roles.',
+            })
+            await assert.rejects(getRoleTags(context, 'w1-crew-role'), {
+                message: 'IAM gave no Tags when reading tags of role w1-crew-role.',
+            })
+        } finally {
+            aws.restore()
+        }
+    })
+
+    it('refuses a role without a name', async () => {
+        const aws = stubAws(() => ({
+            ListRolesResponse: {
+                ListRolesResult: { Roles: [{ Name: 'w1-crew-role' }], IsTruncated: false },
+            },
+        }))
+        try {
+            await assert.rejects(listRoleNames(context), {
+                message: 'IAM gave a role without RoleName: {"Name":"w1-crew-role"}.',
+            })
+        } finally {
+            aws.restore()
+        }
+    })
+
+    it('reads a role without tags, policies or managed policies as having none', async () => {
+        const aws = stubAws(({ action }) => ({
+            [`${action}Response`]: {
+                /* eslint-disable unicorn/no-null -- as IAM answers for an empty list */
+                [`${action}Result`]: {
+                    Tags: null,
+                    PolicyNames: null,
+                    AttachedPolicies: [],
+                    IsTruncated: false,
+                },
+                /* eslint-enable unicorn/no-null */
+            },
+        }))
+        try {
+            assert.deepStrictEqual(await getRoleTags(context, 'w1-crew-role'), {})
+            assert.deepStrictEqual(await listRolePolicyNames(context, 'w1-crew-role'), [])
+            assert.deepStrictEqual(await listAttachedPolicyNames(context, 'w1-crew-role'), [])
+        } finally {
+            aws.restore()
+        }
+    })
+
+    it('follows the marker to the last page of every list', async () => {
+        const aws = stubAws(({ action, parameters: { Marker: marker } }) => {
+            const last = marker === 'second'
+            const item = last ? 'b' : 'a'
+            return {
+                [`${action}Response`]: {
+                    [`${action}Result`]: {
+                        Roles: [{ RoleName: item }],
+                        Tags: [{ Key: item, Value: item }],
+                        PolicyNames: [item],
+                        AttachedPolicies: [{ PolicyName: item }],
+                        IsTruncated: !last,
+                        // eslint-disable-next-line unicorn/no-null -- as IAM ends a listing
+                        Marker: last ? null : 'second',
+                    },
+                },
+            }
+        })
+        try {
+            assert.deepStrictEqual(await listRoleNames(context), ['a', 'b'])
+            assert.deepStrictEqual(await getRoleTags(context, 'w1-crew-role'), { a: 'a', b: 'b' })
+            assert.deepStrictEqual(await listRolePolicyNames(context, 'w1-crew-role'), ['a', 'b'])
+            assert.deepStrictEqual(await listAttachedPolicyNames(context, 'w1-crew-role'), [
+                'a',
+                'b',
+            ])
+            assert.deepStrictEqual(
+                aws.calls.map(call => [call.action, call.parameters.Marker]),
+                [
+                    ['ListRoles', undefined],
+                    ['ListRoles', 'second'],
+                    ['ListRoleTags', undefined],
+                    ['ListRoleTags', 'second'],
+                    ['ListRolePolicies', undefined],
+                    ['ListRolePolicies', 'second'],
+                    ['ListAttachedRolePolicies', undefined],
+                    ['ListAttachedRolePolicies', 'second'],
+                ],
+            )
+        } finally {
+            aws.restore()
+        }
     })
 })
