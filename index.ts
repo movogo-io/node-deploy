@@ -26,14 +26,37 @@ export async function deploy(
     stageDir?: string,
     credentials = credentialsSource(envName),
 ) {
-    const caller = await checkAccount(
+    const { arn, warning: accountWarning } = await checkAccount(
         context,
         `deploy to ${envName}`,
         glueFilePath(path, glueFile),
         credentials,
         'warn',
     )
-    context.log.trace(`deploying to ${envName} as ${caller.arn}`)
+    context.log.trace(`deploying to ${envName} as ${arn}`)
+    try {
+        return {
+            ...(await deployChecked(context, envName, path, glueFile, stagePath, stageDir)),
+            accountWarning,
+        }
+    } catch (e) {
+        // The trace stream has long scrolled the warning away, and a deploy that failed half way
+        // may have written to the unchecked account.
+        if (accountWarning !== undefined) {
+            context.log.warn(accountWarning)
+        }
+        throw e
+    }
+}
+
+async function deployChecked(
+    context: Parameters<typeof deploy>[0],
+    envName: string,
+    path: string,
+    glueFile: string | undefined,
+    stagePath: string | undefined,
+    stageDir: string | undefined,
+) {
     const resolver = new Resolver(context)
     const [{ service, implementations, publishTopics, corsSites, env, ...provider }, reflection] =
         await Promise.all([getGlue(path, envName, resolver, glueFile), reflect(path)])

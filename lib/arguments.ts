@@ -18,7 +18,8 @@ export const usage = `Usage:
 
     aws.accountId at the top level of the glue file is the AWS account the stage lives in.
     A deploy under credentials of another account is refused before it changes anything;
-    a glue file without it deploys with a warning.
+    a glue file without it deploys with a warning, repeated as the last line. Another key in
+    that aws object is refused.
 
   deploy destroy <stage> [--glue <file>] [--service <name>] [--dry-run]
 

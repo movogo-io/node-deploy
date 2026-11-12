@@ -41,7 +41,7 @@ async function deployService({
     stageDir?: string
 }) {
     try {
-        const { logLink, host } = await deploy(
+        const { logLink, host, accountWarning } = await deploy(
             {
                 env: {
                     ...(await localAwsEnv(undefined, envName)),
@@ -66,6 +66,12 @@ async function deployService({
         if (logLink) {
             console.log()
             console.log(`See logs here: ${logLink}`)
+        }
+
+        // Printed last: the first time it stood above everything the deploy traced.
+        if (accountWarning !== undefined) {
+            console.log()
+            console.warn(accountWarning)
         }
     } catch (e) {
         const fileError = e as { code?: string; path?: string }

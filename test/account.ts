@@ -21,6 +21,8 @@ describe('account', () => {
         },
     }
 
+    const undeclaredWarning = `${withoutAccount} declares no AWS account, so nothing checks that profile dev (account 123456789012) is where to deploy to dev. Give it "aws": { "accountId": "<the stage's twelve-digit account id>" } at the top level.`
+
     before(async () => {
         await mkdir(directory, { recursive: true })
         await writeFile(
@@ -48,6 +50,73 @@ describe('account', () => {
         await assert.rejects(declaredAccount(file), {
             message: `aws in ${file} must be an object.`,
         })
+    })
+
+    it('refuses a key of the top-level aws object it does not know, a misspelt accountId among them', async () => {
+        for (const [name, aws] of Object.entries({
+            accountID: { accountID: '123456789012' },
+            account: { account: '123456789012' },
+            layers: { accountId: '123456789012', layers: {} },
+        })) {
+            const file = join(directory, `glue.unknown-${name}.json`)
+            await writeFile(file, JSON.stringify({ aws }))
+            await assert.rejects(declaredAccount(file), {
+                message: `aws in ${file} holds ${name}, which the tool does not know. The top-level aws object takes accountId.`,
+            })
+        }
+    })
+
+    it('refuses a deploy whose glue misspells accountId, before any request', async () => {
+        const file = join(directory, 'glue.misspelt.json')
+        await writeFile(file, JSON.stringify({ aws: { accountID: '123456789012' } }))
+        const aws = stubAws(() => identity)
+        try {
+            await assert.rejects(
+                deploy(
+                    { ...context, log: { ...context.log, error: () => undefined } },
+                    'dev',
+                    join(process.cwd(), 'test/data/greeting'),
+                    file,
+                    undefined,
+                    undefined,
+                    'profile dev',
+                ),
+                { message: /^aws in .* holds accountID, which the tool does not know\./u },
+            )
+            assert.deepStrictEqual(aws.calls, [])
+        } finally {
+            aws.restore()
+        }
+    })
+
+    it('repeats the warning about a glue without an account after a deploy that failed', async () => {
+        const aws = stubAws(() => identity)
+        const warnings: string[] = []
+        try {
+            await assert.rejects(
+                deploy(
+                    {
+                        ...context,
+                        log: {
+                            ...context.log,
+                            warn: (message: string) => {
+                                warnings.push(message)
+                            },
+                            error: () => undefined,
+                        },
+                    },
+                    'dev',
+                    directory,
+                    withoutAccount,
+                    undefined,
+                    undefined,
+                    'profile dev',
+                ),
+            )
+            assert.deepStrictEqual(warnings, [undeclaredWarning, undeclaredWarning])
+        } finally {
+            aws.restore()
+        }
     })
 
     it('reads the account the glue declares, and none when it declares none', async () => {
@@ -95,11 +164,10 @@ describe('account', () => {
                 {
                     account: '123456789012',
                     arn: 'arn:aws:sts::123456789012:assumed-role/slot-runner-w1/session',
+                    warning: undeclaredWarning,
                 },
             )
-            assert.deepStrictEqual(warnings, [
-                `${withoutAccount} declares no AWS account, so nothing checks that profile dev (account 123456789012) is where to deploy to dev. Give it "aws": { "accountId": "<the stage's twelve-digit account id>" } at the top level.`,
-            ])
+            assert.deepStrictEqual(warnings, [undeclaredWarning])
         } finally {
             aws.restore()
         }
@@ -152,6 +220,7 @@ describe('account', () => {
                 {
                     account: '123456789012',
                     arn: 'arn:aws:sts::123456789012:assumed-role/slot-runner-w1/session',
+                    warning: undefined,
                 },
             )
             assert.deepStrictEqual(warnings, [])

@@ -52,7 +52,8 @@ export function glueFilePath(path: string, gluePath?: string) {
 /**
 The AWS account the glue file says its stage lives in: `aws.accountId` at the top level, once for
 the file, as a string so that an id starting with zero survives JSON. Undefined when the file
-declares none.
+declares none. A key the tool does not know is refused: `accountID` or `account` would otherwise
+read as no account declared, and the check the author asked for would silently not run.
 */
 export async function declaredAccount(glueFile: string) {
     const glue: unknown = JSON.parse(await readFile(glueFile, 'utf-8'))
@@ -63,6 +64,12 @@ export async function declaredAccount(glueFile: string) {
     if (aws === null || typeof aws !== 'object' || Array.isArray(aws)) {
         throw new Error(`aws in ${glueFile} must be an object.`)
     }
+    const unknown = Object.keys(aws).filter(key => !topLevelAwsKeys.includes(key))
+    if (unknown.length !== 0) {
+        throw new Error(
+            `aws in ${glueFile} holds ${unknown.join(', ')}, which the tool does not know. The top-level aws object takes ${topLevelAwsKeys.join(', ')}.`,
+        )
+    }
     if (!('accountId' in aws)) {
         return undefined
     }
@@ -71,6 +78,8 @@ export async function declaredAccount(glueFile: string) {
     }
     return aws.accountId
 }
+
+const topLevelAwsKeys = ['accountId']
 
 /**
 A setting of the glue's `aws` object that names a list per function (`layers`, `external`), keyed

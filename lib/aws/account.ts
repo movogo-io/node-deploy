@@ -6,7 +6,8 @@ import { callerIdentity } from './services/sts.js'
 Whether the credentials reach the account the stage's glue file says the stage lives in. Callers
 run it before their first write: a profile pointing at another account would otherwise deploy a
 stage's resources there, or destroy what carries the stage's name there. A destroy refuses a glue
-file that declares no account; a deploy warns and goes on, as before the glue could declare one.
+file that declares no account; a deploy warns and goes on, as before the glue could declare one,
+and gets the warning back to repeat where its output ends.
 */
 export async function checkAccount(
     context: Context,
@@ -23,15 +24,14 @@ export async function checkAccount(
     }
     const caller = await callerIdentity(context)
     if (declared === undefined) {
-        context.log.warn(
-            `${glueFile} declares no AWS account, so nothing checks that ${credentials} (account ${caller.account}) is where to ${intent}. Give it "aws": { "accountId": "<the stage's twelve-digit account id>" } at the top level.`,
-        )
-        return caller
+        const warning = `${glueFile} declares no AWS account, so nothing checks that ${credentials} (account ${caller.account}) is where to ${intent}. Give it "aws": { "accountId": "<the stage's twelve-digit account id>" } at the top level.`
+        context.log.warn(warning)
+        return { ...caller, warning }
     }
     if (declared !== caller.account) {
         throw new Error(
             `Refusing to ${intent}: ${glueFile} declares AWS account ${declared}, but ${credentials} reaches account ${caller.account} as ${caller.arn}. Nothing was changed.`,
         )
     }
-    return caller
+    return { ...caller, warning: undefined }
 }
