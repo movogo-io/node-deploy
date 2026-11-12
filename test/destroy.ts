@@ -250,11 +250,24 @@ describe('destroy', () => {
     const directory = join(tmpdir(), 'riddance', 'deploy-test-destroy')
     const glueFile = join(directory, 'glue.w1.json')
     const glueFileWithoutAccount = join(directory, 'glue.without-account.json')
+    const glueFileOfAnotherAccount = join(directory, 'glue.w2.json')
+    const glueFileWithoutSlots = join(directory, 'glue.production.json')
 
     before(async () => {
         await mkdir(directory, { recursive: true })
-        await writeFile(glueFile, JSON.stringify({ aws: { accountId: '123456789012' } }))
-        await writeFile(glueFileWithoutAccount, JSON.stringify({ services: {} }))
+        await writeFile(
+            glueFile,
+            JSON.stringify({ aws: { accountId: '123456789012', slots: ['w1'] } }),
+        )
+        await writeFile(glueFileWithoutAccount, JSON.stringify({ aws: { slots: ['w1'] } }))
+        await writeFile(
+            glueFileOfAnotherAccount,
+            JSON.stringify({ aws: { accountId: '123456789012', slots: ['w2'] } }),
+        )
+        await writeFile(
+            glueFileWithoutSlots,
+            JSON.stringify({ aws: { accountId: '123456789012' } }),
+        )
     })
 
     it('refuses every stage that is not literally w1 to w9, before any request', async () => {
@@ -439,6 +452,29 @@ describe('destroy', () => {
                 ]),
                 { message: /its name is not one a deploy gives/u },
             )
+            assert.deepStrictEqual(aws.calls, [])
+        } finally {
+            aws.restore()
+        }
+    })
+
+    it('refuses a glue that does not list the slot, a dry run too, before any request', async () => {
+        const aws = stubAws(answer)
+        try {
+            for (const dryRun of [true, false]) {
+                await assert.rejects(
+                    destroy(context, 'w1', { dryRun, glueFile: glueFileWithoutSlots }),
+                    {
+                        message: `Refusing to destroy w1: ${glueFileWithoutSlots} does not list w1 in aws.slots (it lists none). A slot is deployed and destroyed only with the glue file of the account that holds it: "aws": { "slots": ["w1"] } at the top level. Nothing was changed.`,
+                    },
+                )
+                await assert.rejects(
+                    destroy(context, 'w1', { dryRun, glueFile: glueFileOfAnotherAccount }),
+                    {
+                        message: `Refusing to destroy w1: ${glueFileOfAnotherAccount} does not list w1 in aws.slots (it lists w2). A slot is deployed and destroyed only with the glue file of the account that holds it: "aws": { "slots": ["w1"] } at the top level. Nothing was changed.`,
+                    },
+                )
+            }
             assert.deepStrictEqual(aws.calls, [])
         } finally {
             aws.restore()

@@ -3,14 +3,15 @@ import { mkdir, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { deploy } from '../index.js'
-import { checkAccount } from '../lib/aws/account.js'
-import { declaredAccount } from '../lib/glue.js'
+import { checkAccount, checkSlot } from '../lib/aws/account.js'
+import { declaredAws } from '../lib/glue.js'
 import { context, stubAws } from './lib/aws.js'
 
 describe('account', () => {
     const directory = join(tmpdir(), 'riddance', 'deploy-test-account')
     const withAccount = join(directory, 'glue.with-account.json')
     const withoutAccount = join(directory, 'glue.without-account.json')
+    const withSlots = join(directory, 'glue.with-slots.json')
     const identity = {
         GetCallerIdentityResponse: {
             GetCallerIdentityResult: {
@@ -29,6 +30,10 @@ describe('account', () => {
             withAccount,
             JSON.stringify({ aws: { accountId: '123456789012' }, services: {} }),
         )
+        await writeFile(
+            withSlots,
+            JSON.stringify({ aws: { accountId: '123456789012', slots: ['w1', 'w2'] } }),
+        )
         await writeFile(withoutAccount, JSON.stringify({ services: { crew: { aws: {} } } }))
     })
 
@@ -41,13 +46,13 @@ describe('account', () => {
         })) {
             const file = join(directory, `glue.${name}.json`)
             await writeFile(file, JSON.stringify({ aws }))
-            await assert.rejects(declaredAccount(file), {
+            await assert.rejects(declaredAws(file), {
                 message: `aws.accountId in ${file} must be a string of twelve digits.`,
             })
         }
         const file = join(directory, 'glue.list.json')
         await writeFile(file, JSON.stringify({ aws: ['123456789012'] }))
-        await assert.rejects(declaredAccount(file), {
+        await assert.rejects(declaredAws(file), {
             message: `aws in ${file} must be an object.`,
         })
     })
@@ -60,8 +65,8 @@ describe('account', () => {
         })) {
             const file = join(directory, `glue.unknown-${name}.json`)
             await writeFile(file, JSON.stringify({ aws }))
-            await assert.rejects(declaredAccount(file), {
-                message: `aws in ${file} holds ${name}, which the tool does not know. The top-level aws object takes accountId.`,
+            await assert.rejects(declaredAws(file), {
+                message: `aws in ${file} holds ${name}, which the tool does not know. The top-level aws object takes accountId, slots.`,
             })
         }
     })
@@ -121,9 +126,72 @@ describe('account', () => {
 
     it('reads the account the glue declares, and none when it declares none', async () => {
         assert.deepStrictEqual(
-            [await declaredAccount(withAccount), await declaredAccount(withoutAccount)],
-            ['123456789012', undefined],
+            [await declaredAws(withAccount), await declaredAws(withoutAccount)],
+            [
+                { accountId: '123456789012', slots: [] },
+                { accountId: undefined, slots: [] },
+            ],
         )
+    })
+
+    it('refuses slots the glue does not state as a list of w1 to w9', async () => {
+        for (const [name, slots] of Object.entries({
+            string: 'w1',
+            map: { w1: true },
+            stage: ['w1', 'dev'],
+            beyond: ['w10'],
+            pattern: ['w*'],
+            number: [1],
+        })) {
+            const file = join(directory, `glue.slots-${name}.json`)
+            await writeFile(file, JSON.stringify({ aws: { accountId: '123456789012', slots } }))
+            await assert.rejects(declaredAws(file), {
+                message: `aws.slots in ${file} must be a list of slot names, w1 to w9.`,
+            })
+        }
+    })
+
+    it('reads the slots the glue lists', async () => {
+        assert.deepStrictEqual(await declaredAws(withSlots), {
+            accountId: '123456789012',
+            slots: ['w1', 'w2'],
+        })
+    })
+
+    it('refuses a slot the glue does not list, and passes one it lists and any stage that is no slot', async () => {
+        await assert.rejects(checkSlot('destroy w3', 'w3', withSlots), {
+            message: `Refusing to destroy w3: ${withSlots} does not list w3 in aws.slots (it lists w1, w2). A slot is deployed and destroyed only with the glue file of the account that holds it: "aws": { "slots": ["w3"] } at the top level. Nothing was changed.`,
+        })
+        for (const file of [withAccount, withoutAccount]) {
+            await assert.rejects(checkSlot('deploy to w1', 'w1', file), {
+                message: `Refusing to deploy to w1: ${file} does not list w1 in aws.slots (it lists none). A slot is deployed and destroyed only with the glue file of the account that holds it: "aws": { "slots": ["w1"] } at the top level. Nothing was changed.`,
+            })
+        }
+        await checkSlot('deploy to w2', 'w2', withSlots)
+        for (const stage of ['dev', 'staging', 'production', 'w10']) {
+            await checkSlot(`deploy to ${stage}`, stage, withoutAccount)
+        }
+    })
+
+    it('refuses a deploy to a slot the glue does not list, before any request', async () => {
+        const aws = stubAws(() => identity)
+        try {
+            await assert.rejects(
+                deploy(
+                    { ...context, log: { ...context.log, error: () => undefined } },
+                    'w1',
+                    join(process.cwd(), 'test/data/greeting'),
+                    withAccount,
+                    undefined,
+                    undefined,
+                    'profile w1',
+                ),
+                { message: /^Refusing to deploy to w1: .* does not list w1 in aws\.slots/u },
+            )
+            assert.deepStrictEqual(aws.calls, [])
+        } finally {
+            aws.restore()
+        }
     })
 
     it('refuses a glue without an account where one is required, asking nobody', async () => {

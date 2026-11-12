@@ -50,15 +50,15 @@ export function glueFilePath(path: string, gluePath?: string) {
 }
 
 /**
-The AWS account the glue file says its stage lives in: `aws.accountId` at the top level, once for
-the file, as a string so that an id starting with zero survives JSON. Undefined when the file
-declares none. A key the tool does not know is refused: `accountID` or `account` would otherwise
-read as no account declared, and the check the author asked for would silently not run.
+What the glue file says about its stage's account, in `aws` at the top level, once for the file:
+`accountId`, as a string so that an id starting with zero survives JSON, and `slots`, the slots
+that account may hold. A key the tool does not know is refused: `accountID` or `account` would
+otherwise read as no account declared, and the check the author asked for would silently not run.
 */
-export async function declaredAccount(glueFile: string) {
+export async function declaredAws(glueFile: string) {
     const glue: unknown = JSON.parse(await readFile(glueFile, 'utf-8'))
     if (glue === null || typeof glue !== 'object' || !('aws' in glue)) {
-        return undefined
+        return { accountId: undefined, slots: [] }
     }
     const { aws } = glue
     if (aws === null || typeof aws !== 'object' || Array.isArray(aws)) {
@@ -70,6 +70,20 @@ export async function declaredAccount(glueFile: string) {
             `aws in ${glueFile} holds ${unknown.join(', ')}, which the tool does not know. The top-level aws object takes ${topLevelAwsKeys.join(', ')}.`,
         )
     }
+    return { accountId: accountIdOf(aws, glueFile), slots: slotsOf(aws, glueFile) }
+}
+
+/**
+Slots are named literally. A pattern would sooner or later match something else: `w1*` matches
+`w10`, and any prefix rule would admit `dev`.
+*/
+export function isSlot(stage: string) {
+    return /^w[1-9]$/u.test(stage)
+}
+
+const topLevelAwsKeys = ['accountId', 'slots']
+
+function accountIdOf(aws: object, glueFile: string) {
     if (!('accountId' in aws)) {
         return undefined
     }
@@ -79,7 +93,18 @@ export async function declaredAccount(glueFile: string) {
     return aws.accountId
 }
 
-const topLevelAwsKeys = ['accountId']
+function slotsOf(aws: object, glueFile: string) {
+    if (!('slots' in aws)) {
+        return []
+    }
+    const slots = Array.isArray(aws.slots)
+        ? aws.slots.filter((slot): slot is string => typeof slot === 'string' && isSlot(slot))
+        : []
+    if (!Array.isArray(aws.slots) || slots.length !== aws.slots.length) {
+        throw new Error(`aws.slots in ${glueFile} must be a list of slot names, w1 to w9.`)
+    }
+    return slots
+}
 
 /**
 A setting of the glue's `aws` object that names a list per function (`layers`, `external`), keyed

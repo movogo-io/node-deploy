@@ -1,6 +1,6 @@
 import { validateEventFilter } from '@movogo-io/host/attributes'
 import { type Reflection, reflect } from '@movogo-io/host/reflect'
-import { checkAccount } from './lib/aws/account.js'
+import { checkAccount, checkSlot } from './lib/aws/account.js'
 import { credentialsSource } from './lib/aws/credentials.js'
 import { Resolver } from './lib/aws/resolve.js'
 import { desiredLayers } from './lib/aws/services/layers.js'
@@ -26,6 +26,7 @@ export async function deploy(
     stageDir?: string,
     credentials = credentialsSource(envName),
 ) {
+    await checkSlot(`deploy to ${envName}`, envName, glueFilePath(path, glueFile))
     const { arn, warning: accountWarning } = await checkAccount(
         context,
         `deploy to ${envName}`,

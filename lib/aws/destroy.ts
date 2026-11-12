@@ -1,4 +1,5 @@
-import { checkAccount } from './account.js'
+import { isSlot } from '../glue.js'
+import { checkAccount, checkSlot } from './account.js'
 import { credentialsSource } from './credentials.js'
 import { type Context } from './lite.js'
 import { deleteApi, getApis } from './services/api-gateway.js'
@@ -63,6 +64,7 @@ export async function destroy(
     }: { service?: string; dryRun: boolean; glueFile: string; credentials?: string },
 ) {
     assertSlot(stage)
+    await checkSlot(`destroy ${stage}`, stage, glueFile)
     const caller = await checkAccount(context, `destroy ${stage}`, glueFile, credentials, 'refuse')
     context.log.trace(`destroying ${stage} as ${caller.arn}`)
     const plan = await planDestroy(context, stage, service)
@@ -79,14 +81,6 @@ export async function destroy(
     }
     await executeDestroy(context, stage, plan.deletions)
     return plan
-}
-
-/**
-Slots are named literally. A pattern would sooner or later match something else: `w1*` matches
-`w10`, and any prefix rule would admit `dev`.
-*/
-export function isSlot(stage: string) {
-    return /^w[1-9]$/u.test(stage)
 }
 
 // `stage-service-` is used as a name prefix, so the name may hold nothing that widens it.

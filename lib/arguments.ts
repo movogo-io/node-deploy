@@ -1,5 +1,6 @@
 import { parseArgs } from 'node:util'
-import { isServiceName, isSlot } from './aws/destroy.js'
+import { isServiceName } from './aws/destroy.js'
+import { isSlot } from './glue.js'
 
 export const usage = `Usage:
   deploy [<path>] <stage> [<glue file>] [--stage-dir <dir>]
@@ -21,6 +22,9 @@ export const usage = `Usage:
     a glue file without it deploys with a warning, repeated as the last line. Another key in
     that aws object is refused.
 
+    aws.slots beside it lists the slots (w1 to w9) that account may hold. A deploy to a slot
+    is refused unless the glue file lists that slot; other stages need no entry.
+
   deploy destroy <stage> [--glue <file>] [--service <name>] [--dry-run]
 
     Deletes what deploys made on the slot <stage>, which must be one of w1 to w9: rules and
@@ -30,8 +34,9 @@ export const usage = `Usage:
     The whole list is printed first, with what was skipped and why, and only that list is
     deleted.
 
-    --glue <file>       The stage's glue file (default: ../glue/glue.json). It must declare
-                        aws.accountId, and the credentials must be of that account.
+    --glue <file>       The stage's glue file (default: ../glue/glue.json). It must list
+                        <stage> in aws.slots and declare aws.accountId, and the credentials
+                        must be of that account.
     --service <name>    Only what belongs to that service; topics are kept.
     --dry-run           Stop after printing the list.`
 
