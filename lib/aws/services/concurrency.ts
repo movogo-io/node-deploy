@@ -1,5 +1,6 @@
 import { jsonResponse, okResponse } from '@riddance/fetch'
 import type { Reflection } from '@movogo-io/host/reflect'
+import { isSlot } from '../../glue.js'
 import { type Context, awsRequest, retry } from '../lite.js'
 
 export type Concurrency = { [functionName: string]: number }
@@ -9,6 +10,10 @@ Makes each function's reserved concurrency what `desiredConcurrency` names, and 
 every other function of the service, so the handlers and the glue stay the only places it is
 set. An event function at its cap leaves SNS's asynchronous invocations waiting in Lambda's own
 queue, retried for up to six hours, instead of throttling the account's shared pool.
+
+A slot reserves nothing: a reservation is taken out of the pool the account's other stages run
+on, and IAM has no key for the amount, so nothing else could bound what a slot takes. One a slot
+function already holds is still removed.
 */
 export async function syncConcurrency(
     context: Context,
@@ -22,7 +27,13 @@ export async function syncConcurrency(
     for (const name of functionNames) {
         current[name] = await reservedOf(context, `${prefix}-${service}-${name}`)
     }
-    for (const change of concurrencyChanges(functionNames, current, desired)) {
+    const reserving = isSlot(prefix) ? {} : desired
+    if (reserving !== desired && Object.keys(desired).length !== 0) {
+        context.log.warn(
+            `reserved concurrency skipped for ${Object.keys(desired).join(', ')}: ${prefix} is a slot, and a slot reserves none`,
+        )
+    }
+    for (const change of concurrencyChanges(functionNames, current, reserving)) {
         const path = `/2017-10-31/functions/${prefix}-${service}-${change.name}/concurrency`
         if (change.reserved === undefined) {
             context.log.trace(`removing reserved concurrency of lambda ${change.name}`)

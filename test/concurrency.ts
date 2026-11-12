@@ -1,5 +1,10 @@
 import assert from 'node:assert/strict'
-import { concurrencyChanges, desiredConcurrency } from '../lib/aws/services/concurrency.js'
+import {
+    concurrencyChanges,
+    desiredConcurrency,
+    syncConcurrency,
+} from '../lib/aws/services/concurrency.js'
+import { context, stubAws } from './lib/aws.js'
 
 describe('reserved concurrency', () => {
     const http = [{ name: 'get', method: 'GET' as const, pathPattern: 'views/*', config: {} }]
@@ -83,4 +88,77 @@ describe('reserved concurrency', () => {
             ],
         )
     })
+
+    it('reserves and removes on a stage that is no slot', async () => {
+        assert.deepStrictEqual(await synced('dev'), {
+            writes: [
+                {
+                    method: 'PUT',
+                    path: '/2017-10-31/functions/dev-views-reconcile-due/concurrency',
+                    parameters: { ReservedConcurrentExecutions: 25 },
+                },
+                {
+                    method: 'DELETE',
+                    path: '/2017-10-31/functions/dev-views-document-changed/concurrency',
+                    parameters: {},
+                },
+            ],
+            warnings: [],
+        })
+        assert.deepStrictEqual(
+            (await synced('w10')).writes.map(call => call.method),
+            ['PUT', 'DELETE'],
+        )
+    })
+
+    it('reserves nothing on a slot, says so once, and still removes a reservation', async () => {
+        assert.deepStrictEqual(await synced('w9'), {
+            writes: [
+                {
+                    method: 'DELETE',
+                    path: '/2017-10-31/functions/w9-views-document-changed/concurrency',
+                    parameters: {},
+                },
+            ],
+            warnings: [
+                'reserved concurrency skipped for reconcile-due: w9 is a slot, and a slot reserves none',
+            ],
+        })
+    })
 })
+
+// A service whose `reconcile-due` declares 25 and holds none, and whose `document-changed`
+// declares none and holds 5.
+async function synced(stage: string) {
+    const warnings: string[] = []
+    const aws = stubAws(call =>
+        call.method === 'GET' && call.path.endsWith('-document-changed/concurrency')
+            ? { ReservedConcurrentExecutions: 5 }
+            : {},
+    )
+    try {
+        await syncConcurrency(
+            {
+                ...context,
+                log: {
+                    ...context.log,
+                    warn: message => {
+                        warnings.push(message)
+                    },
+                },
+            },
+            stage,
+            'views',
+            ['get', 'reconcile-due', 'document-changed'],
+            { 'reconcile-due': 25 },
+        )
+        return {
+            writes: aws.calls
+                .filter(call => call.method !== 'GET')
+                .map(({ method, path, parameters }) => ({ method, path, parameters })),
+            warnings,
+        }
+    } finally {
+        aws.restore()
+    }
+}

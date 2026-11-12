@@ -190,7 +190,12 @@ refuses the deploy.
   deploy loads every entrypoint to find its handlers, so the packages must be installed where it
   runs: keep them dev dependencies of the service, which the staged bundle leaves out.
 - **`concurrency`**: the reserved concurrency of an event function, overriding the handler's
-  `concurrencyMax`.
+  `concurrencyMax`. **Not on a slot:** a deploy to `w1` to `w9` reserves nothing, whatever the
+  handler or the glue declares, and says so in one line (`reserved concurrency skipped for …`). A
+  reservation is taken out of the pool every stage of the account runs on, and IAM cannot limit
+  the amount, so a slot's role is not granted `lambda:PutFunctionConcurrency` at all. A
+  reservation a slot function already holds is still removed. A slot's event functions therefore
+  run uncapped; every other stage is unchanged.
 
 A function named in neither `layers` nor `external` is bundled and deployed as before. The glue
 owns a function's layers: a layer attached by hand, to any function of the service, is removed by
