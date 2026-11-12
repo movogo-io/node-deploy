@@ -2,13 +2,9 @@
 
 import { deploy } from '../index.js'
 import { localAwsEnv } from '../lib/aws/lite.js'
+import { parseArguments } from '../lib/arguments.js'
 
-const [, , pathOrEnvArg, envArg, glueFile] = process.argv
-if (!pathOrEnvArg) {
-    throw new Error('Please specify target environment name')
-}
-const path = envArg ? pathOrEnvArg : process.cwd()
-const envName = envArg ?? pathOrEnvArg
+const { path = process.cwd(), stage: envName, glueFile, stageDir } = parsed()
 
 try {
     const { logLink, host } = await deploy(
@@ -29,6 +25,8 @@ try {
         envName,
         path,
         glueFile,
+        undefined,
+        stageDir,
     )
 
     console.log('done.')
@@ -51,4 +49,13 @@ try {
         process.exit(1)
     }
     throw e
+}
+
+function parsed() {
+    try {
+        return parseArguments(process.argv.slice(2))
+    } catch (e) {
+        console.error(Error.isError(e) ? e.message : e)
+        process.exit(1)
+    }
 }

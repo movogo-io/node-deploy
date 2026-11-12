@@ -4,7 +4,7 @@ import { Resolver } from './lib/aws/resolve.js'
 import { callerArn } from './lib/aws/services/sts.js'
 import { getCurrentState, sync } from './lib/aws/sync.js'
 import { getGlue } from './lib/glue.js'
-import { stage } from './lib/stage.js'
+import { buildDirectory, stage } from './lib/stage.js'
 
 export async function deploy(
     context: {
@@ -19,6 +19,7 @@ export async function deploy(
     path: string,
     glueFile?: string,
     stagePath?: string,
+    stageDir?: string,
 ) {
     context.log.trace(`deploying to ${envName} as ${await callerArn(context)}`)
     const resolver = new Resolver(context)
@@ -34,7 +35,7 @@ export async function deploy(
         ),
         stage(
             context.log,
-            stagePath,
+            stagePath ?? (await buildDirectory(stageDir, envName, service, path)),
             path,
             reflection.revision,
             implementations,

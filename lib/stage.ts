@@ -5,8 +5,8 @@ import virtual from '@rollup/plugin-virtual'
 import { rollup, RollupCache, SourceMap, type Plugin } from '@rollup/wasm-node'
 import { createHash } from 'node:crypto'
 import { mkdir, readdir, readFile, stat, writeFile } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
-import { dirname, join, relative } from 'node:path'
+import { homedir, tmpdir } from 'node:os'
+import { dirname, isAbsolute, join, relative, resolve as resolvePath } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
 import zlib from 'node:zlib'
 // eslint-disable-next-line camelcase
@@ -45,20 +45,73 @@ export const handler = awsHandler
     patch: (code: string) => `/*global fetch AbortController*/${code}`,
 }
 
+/**
+Where a service is built. The stage is part of the default so that one service deployed to two
+stages at once does not build in one directory. A root from the command line is the caller's to
+share or not: it replaces the stage level too, since a bundle does not depend on the stage.
+*/
+export async function buildDirectory(
+    root: string | undefined,
+    stageName: string,
+    service: string,
+    path: string,
+) {
+    if (root === undefined) {
+        const base = join(tmpdir(), 'riddance', 'stage')
+        return inside(base, join(base, stageName, service), `stage ${stageName}`)
+    }
+    if (!root) {
+        throw new Error('--stage-dir needs a directory.')
+    }
+    const base = resolvePath(root)
+    if (base === resolvePath('/') || base === resolvePath(homedir())) {
+        throw new Error(`--stage-dir ${root} is not a directory to build in.`)
+    }
+    if (isWithin(base, resolvePath(path)) || isWithin(resolvePath(path), base)) {
+        throw new Error(`--stage-dir ${root} overlaps the project being deployed.`)
+    }
+    if (!(await isDirectoryOrAbsent(base))) {
+        throw new Error(`--stage-dir ${root} exists and is not a directory.`)
+    }
+    return inside(base, join(base, service), `service ${service}`)
+}
+
+function inside(base: string, directory: string, what: string) {
+    if (directory === base || !isWithin(base, directory)) {
+        throw new Error(`The name of ${what} would put its build outside ${base}.`)
+    }
+    return directory
+}
+
+function isWithin(base: string, directory: string) {
+    const fromBase = relative(base, directory)
+    return !fromBase.startsWith('..') && !isAbsolute(fromBase)
+}
+
+async function isDirectoryOrAbsent(directory: string) {
+    try {
+        return (await stat(directory)).isDirectory()
+    } catch (e) {
+        if (typeof e === 'object' && e !== null && 'code' in e && e.code === 'ENOENT') {
+            return true
+        }
+        throw e
+    }
+}
+
 export async function stage(
     log: {
         trace: (message: string) => void
         warn: (message: string) => void
         error: (message: string) => void
     },
-    stagePath: string | undefined,
+    stagePath: string,
     path: string,
     revision: string | undefined,
     implementations: { [fromPackage: string]: Implementation },
     service: string,
     types: { [name: string]: 'http' | 'timer' | 'event' },
 ) {
-    stagePath ??= join(tmpdir(), 'riddance', 'stage', service)
     log.trace(`stage dir: ${stagePath}`)
     // The Lambda entry imports the host from whatever the glue substitutes for the service
     // package; every glue block is keyed `@riddance/service` until the fleet is repointed.
