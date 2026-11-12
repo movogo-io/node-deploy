@@ -5,7 +5,7 @@ import { logQueryLink } from './services/cloud-watch.js'
 import { syncTimeToLive } from './services/dynamodb.js'
 import { syncEventBridge } from './services/event-bridge.js'
 import { type Concurrency, desiredConcurrency, syncConcurrency } from './services/concurrency.js'
-import { getFunctions, syncLambda } from './services/lambda.js'
+import { type AwsFunction, getFunctions, syncLambda } from './services/lambda.js'
 import { assignPolicy, checkPolicyStatements, getRole, syncRole } from './services/roles.js'
 import { syncTopics, unsubscribeSurplus } from './services/sns.js'
 import { getTriggers, syncTriggers } from './services/triggers.js'
@@ -15,10 +15,11 @@ export async function getCurrentState(
     prefix: string,
     service: string,
     reflectedNames: string[],
+    accountFunctions: Promise<AwsFunction[]>,
 ) {
     const [role, { functions, triggers }, apis] = await Promise.all([
         getRole(context, prefix, service),
-        getFunctionsWithTriggers(context, prefix, service, reflectedNames),
+        getFunctionsWithTriggers(context, prefix, service, reflectedNames, accountFunctions),
         getApi(context, prefix, service),
     ])
     return { role, functions, triggers, apis }
@@ -29,8 +30,15 @@ async function getFunctionsWithTriggers(
     prefix: string,
     service: string,
     reflectedNames: string[],
+    accountFunctions: Promise<AwsFunction[]>,
 ) {
-    const functions = await getFunctions(context, prefix, service, reflectedNames)
+    const functions = await getFunctions(
+        context,
+        await accountFunctions,
+        prefix,
+        service,
+        reflectedNames,
+    )
     return { functions, triggers: await getTriggers(context, prefix, service, functions) }
 }
 

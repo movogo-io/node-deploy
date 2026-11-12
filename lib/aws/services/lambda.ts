@@ -89,7 +89,7 @@ export type AwsFunctionLite = {
     size: string
 }
 
-type AwsFunction = {
+export type AwsFunction = {
     Description: string
     TracingConfig: {
         Mode: 'PassThrough'
@@ -129,13 +129,13 @@ environment through the glue (`$SAME_AS`, `$PUBLIC_KEY`). It is a prefix match, 
 `staging-rentals-` also lists `staging-rentals-v2-*`: nothing may be created, updated or
 deleted from this list. `getFunctions` is for that, and pays for the exactness.
 */
-export async function listFunctions(
-    context: Context,
+export function listFunctions(
+    accountFunctions: AwsFunction[],
     prefix: string,
     service: string,
-): Promise<AwsFunctionLite[]> {
+): AwsFunctionLite[] {
     const fnPrefix = `${prefix}-${service}-`.toLowerCase()
-    return (await listFunctionsByPrefix(context, fnPrefix)).map(fn => asLite(fn, fnPrefix))
+    return withPrefix(accountFunctions, fnPrefix).map(fn => asLite(fn, fnPrefix))
 }
 
 /**
@@ -150,12 +150,13 @@ functions under its prefix, beside the permissions it already has.
 */
 export async function getFunctions(
     context: Context,
+    accountFunctions: AwsFunction[],
     prefix: string,
     service: string,
     reflectedNames: string[],
 ): Promise<AwsFunctionLite[]> {
     const fnPrefix = `${prefix}-${service}-`.toLowerCase()
-    const candidates = await listFunctionsByPrefix(context, fnPrefix)
+    const candidates = withPrefix(accountFunctions, fnPrefix)
     const ours = await selectOwnFunctions(candidates, fnPrefix, reflectedNames, {
         service,
         environment: prefix,
@@ -229,7 +230,11 @@ export async function selectOwnFunctions<T extends { FunctionName: string }>(
     return ours
 }
 
-async function listFunctionsByPrefix(context: Context, fnPrefix: string) {
+/**
+Every function of the account. The API has no filter, and a listing takes about half a minute on
+an account with 2,600 functions, so a deploy makes one and shares it (see Resolver).
+*/
+export async function listAccountFunctions(context: Context) {
     const funcs: AwsFunction[] = []
     let marker = ''
     for (;;) {
@@ -246,7 +251,11 @@ async function listFunctionsByPrefix(context: Context, fnPrefix: string) {
         }
         marker = `Marker=${encodeURIComponent(page.NextMarker)}`
     }
-    return funcs.filter(fn => fn.FunctionName.toLowerCase().startsWith(fnPrefix))
+    return funcs
+}
+
+function withPrefix(functions: AwsFunction[], fnPrefix: string) {
+    return functions.filter(fn => fn.FunctionName.toLowerCase().startsWith(fnPrefix))
 }
 
 function asLite(fn: AwsFunction, fnPrefix: string): AwsFunctionLite {

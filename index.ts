@@ -32,6 +32,7 @@ export async function deploy(
             envName,
             service,
             [...reflection.http, ...reflection.timers, ...reflection.events].map(fn => fn.name),
+            resolver.accountFunctions(),
         ),
         stage(
             context.log,
