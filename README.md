@@ -60,6 +60,12 @@ Check each point before the first deploy with 0.6.0.
   line. Add the account id to end the warning.
 - A deploy to a slot (`w1` to `w9`) is refused unless the glue file lists the slot in `aws.slots`.
 
+**0.6.1**
+
+- On a slot (`w1` to `w9`) a new timer rule is created disabled, and the deploy says so in one
+  line. Enable a slot's timers once the slot is complete; see [Timer rules](#timer-rules). Rules
+  that exist keep their state, and no other stage changes.
+
 ## Credentials
 
 In this order: the key pair in the environment; the profile `AWS_PROFILE` names; the profile named
