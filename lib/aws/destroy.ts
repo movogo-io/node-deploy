@@ -113,7 +113,7 @@ export async function planDestroy(
         functions.plan,
         messaging.topics,
         await planRoles(context, stage, service),
-        await planLogGroups(context, service, scope, functions.plan.deletions),
+        await planLogGroups(context, service, scope, functions.plan),
     ]
     return {
         deletions: parts.flatMap(part => part.deletions),
@@ -137,12 +137,61 @@ export async function executeDestroy(context: Context, stage: string, deletions:
 }
 
 function assertOfStage(stage: string, deletion: Deletion) {
+    const reason = outsideStage(stage, deletion)
+    if (reason) {
+        throw new Error(`Refusing to delete ${describe(deletion)}: ${reason}. Nothing was deleted.`)
+    }
+}
+
+// The name is what the plan matched and printed, but a delete is sent by ARN or id for some
+// kinds, and by a URL path for others: each identifier must be the named thing's own, and no
+// name may carry a character that would address something else.
+function outsideStage(stage: string, deletion: Deletion) {
     const prefix = deletion.kind === 'log group' ? `/aws/lambda/${stage}-` : `${stage}-`
     if (!deletion.name.startsWith(prefix)) {
-        throw new Error(
-            `Refusing to delete ${describe(deletion)}: its name does not start with ${prefix}. Nothing was deleted.`,
-        )
+        return `its name does not start with ${prefix}`
     }
+    if (!isDeployName(deletion.name.slice(prefix.length))) {
+        return 'its name is not one a deploy gives'
+    }
+    switch (deletion.kind) {
+        case 'topic':
+            if (topicNameOf(deletion.arn) !== deletion.name) {
+                return `its ARN is not that of a topic named ${deletion.name}`
+            }
+            return undefined
+        case 'subscription':
+            if (
+                topicNameOf(deletion.arn.slice(0, deletion.arn.lastIndexOf(':'))) !== deletion.name
+            ) {
+                return `its ARN is not that of a subscription to ${deletion.name}`
+            }
+            return undefined
+        case 'api':
+            if (!/^[a-z0-9]+$/u.test(deletion.id)) {
+                return 'its id is not an API id'
+            }
+            return undefined
+        case 'role policy':
+            if (!/^[\w+=,.@-]+$/u.test(deletion.policy)) {
+                return 'its policy name is not one IAM gives'
+            }
+            return undefined
+        case 'rule targets':
+        case 'rule':
+        case 'function':
+        case 'role':
+        case 'log group':
+            return undefined
+    }
+}
+
+function isDeployName(name: string) {
+    return /^[\w.-]+$/u.test(name)
+}
+
+function topicNameOf(arn: string) {
+    return /^arn:aws[a-z-]*:sns:[a-z0-9-]+:\d{12}:([^:]+)$/u.exec(arn)?.[1]
 }
 
 async function remove(context: Context, deletion: Deletion) {
@@ -204,7 +253,8 @@ async function planRules(
 ) {
     const plan: Plan = { deletions: [], skipped: [] }
     for (const rule of await listRules(context, scope)) {
-        const reason = mismatch(await getRuleTags(context, rule), stage, service)
+        const reason =
+            misnamed(rule.Name) ?? mismatch(await getRuleTags(context, rule), stage, service)
         if (reason) {
             plan.skipped.push({ kind: 'rule', name: rule.Name, reason })
             continue
@@ -224,7 +274,7 @@ async function planApis(context: Context, stage: string, service: string | undef
         if (service !== undefined && api.name !== `${stage}-${service}`) {
             continue
         }
-        const reason = mismatch(api.tags, stage, service)
+        const reason = misnamed(api.name) ?? mismatch(api.tags, stage, service)
         if (reason) {
             plan.skipped.push({ kind: 'api', name: `${api.name} (${api.apiId})`, reason })
             continue
@@ -247,7 +297,9 @@ async function planFunctions(
         if (!fn.FunctionName.startsWith(scope)) {
             continue
         }
-        const reason = mismatch(await getFunctionTags(context, fn), stage, service)
+        const reason =
+            misnamed(fn.FunctionName) ??
+            mismatch(await getFunctionTags(context, fn), stage, service)
         if (reason) {
             plan.skipped.push({ kind: 'function', name: fn.FunctionName, reason })
             continue
@@ -267,11 +319,12 @@ async function planTopics(
     const topics: Plan = { deletions: [], skipped: [] }
     const subscriptions: Plan = { deletions: [], skipped: [] }
     for (const arn of await listTopicArns(context)) {
-        const name = arn.split(':').at(-1) ?? ''
-        if (!name.startsWith(`${stage}-`)) {
+        const name = topicNameOf(arn)
+        if (!name?.startsWith(`${stage}-`)) {
             continue
         }
-        const reason = mismatch(await getTopicTags(context, arn), stage, undefined)
+        const reason =
+            misnamed(name) ?? mismatch(await getTopicTags(context, arn), stage, undefined)
         if (reason) {
             topics.skipped.push({ kind: 'topic', name: arn, reason })
             continue
@@ -333,7 +386,7 @@ async function roleMismatch(
     stage: string,
     service: string | undefined,
 ) {
-    if (!name.endsWith('-role')) {
+    if (!name.endsWith('-role') || misnamed(name)) {
         return 'not named as a deploy names a role'
     }
     const reason = mismatch(await getRoleTags(context, name), stage, service)
@@ -347,28 +400,49 @@ async function roleMismatch(
     return undefined
 }
 
-// Lambda makes log groups, untagged. For one service the prefix would also take those of a
-// service whose name starts the same, so only the log groups of its planned functions go.
+// Lambda makes log groups, untagged, so a log group goes with its function: not when the
+// function was skipped, and for one service only those of its planned functions, since the
+// prefix also takes those of a service whose name starts the same.
 async function planLogGroups(
     context: Context,
     service: string | undefined,
     scope: string,
-    functions: Deletion[],
+    functions: Plan,
 ) {
     const plan: Plan = { deletions: [], skipped: [] }
-    const ofFunctions = new Set(functions.map(fn => `/aws/lambda/${fn.name}`))
+    const planned = new Set(functions.deletions.map(fn => `/aws/lambda/${fn.name}`))
+    const kept = new Set(functions.skipped.map(fn => `/aws/lambda/${fn.name}`))
     for (const name of await listLogGroups(context, `/aws/lambda/${scope}`)) {
-        if (service !== undefined && !ofFunctions.has(name)) {
-            plan.skipped.push({
-                kind: 'log group',
-                name,
-                reason: `no function of ${service} to be deleted has that name`,
-            })
+        const reason = logGroupKept(name, service, planned, kept)
+        if (reason) {
+            plan.skipped.push({ kind: 'log group', name, reason })
             continue
         }
         plan.deletions.push({ kind: 'log group', name })
     }
     return plan
+}
+
+function logGroupKept(
+    name: string,
+    service: string | undefined,
+    planned: Set<string>,
+    kept: Set<string>,
+) {
+    if (kept.has(name)) {
+        return 'its function is skipped'
+    }
+    if (service !== undefined && !planned.has(name)) {
+        return `no function of ${service} to be deleted has that name`
+    }
+    return misnamed(name.slice('/aws/lambda/'.length))
+}
+
+function misnamed(name: string) {
+    if (isDeployName(name)) {
+        return undefined
+    }
+    return 'not named as a deploy names things'
 }
 
 function mismatch(tags: Tags, stage: string, service: string | undefined) {

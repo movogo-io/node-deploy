@@ -55,6 +55,8 @@ const logGroups = [
     '/aws/lambda/w1-crew-get',
     '/aws/lambda/w1-crew-retired',
     '/aws/lambda/w1-crew-v2-get',
+    '/aws/lambda/w1-crew-borrowed',
+    '/aws/lambda/w1-by-hand',
     '/aws/lambda/w10-crew-get',
     '/aws/lambda/dev-crew-get',
 ]
@@ -105,7 +107,9 @@ function answer({ method, service, path, action, parameters }: AwsCall): unknown
             return {
                 ListTopicsResponse: {
                     ListTopicsResult: {
-                        Topics: Object.keys(topics).map(name => ({ TopicArn: `arn:sns:${name}` })),
+                        Topics: Object.keys(topics).map(name => ({
+                            TopicArn: `arn:aws:sns:eu-north-1:123456789012:${name}`,
+                        })),
                         // eslint-disable-next-line unicorn/no-null -- as SNS ends a listing
                         NextToken: null,
                     },
@@ -115,7 +119,11 @@ function answer({ method, service, path, action, parameters }: AwsCall): unknown
             return {
                 ListTagsForResourceResponse: {
                     ListTagsForResourceResult: {
-                        Tags: topics[text(parameters.ResourceArn).slice('arn:sns:'.length)],
+                        Tags: topics[
+                            text(parameters.ResourceArn).slice(
+                                'arn:aws:sns:eu-north-1:123456789012:'.length,
+                            )
+                        ],
                     },
                 },
             }
@@ -330,9 +338,61 @@ describe('destroy', () => {
             )
             await assert.rejects(
                 executeDestroy(context, 'w1', [
-                    { kind: 'topic', name: 'dev-rental-created', arn: 'arn:sns:w1-looks-right' },
+                    {
+                        kind: 'topic',
+                        name: 'dev-rental-created',
+                        arn: 'arn:aws:sns:eu-north-1:123456789012:w1-looks-right',
+                    },
                 ]),
-                { message: /^Refusing to delete topic arn:sns:w1-looks-right/u },
+                {
+                    message:
+                        /^Refusing to delete topic arn:aws:sns:eu-north-1:123456789012:w1-looks-right/u,
+                },
+            )
+            assert.deepStrictEqual(aws.calls, [])
+        } finally {
+            aws.restore()
+        }
+    })
+
+    it('refuses a list whose identifiers are not those of the named thing', async () => {
+        const aws = stubAws(answer)
+        const devTopic = 'arn:aws:sns:eu-north-1:123456789012:dev-rental-created'
+        try {
+            await assert.rejects(
+                executeDestroy(context, 'w1', [
+                    { kind: 'topic', name: 'w1-rental-created', arn: devTopic },
+                ]),
+                {
+                    message: `Refusing to delete topic ${devTopic}: its ARN is not that of a topic named w1-rental-created. Nothing was deleted.`,
+                },
+            )
+            await assert.rejects(
+                executeDestroy(context, 'w1', [
+                    {
+                        kind: 'subscription',
+                        name: 'w1-rental-created',
+                        arn: `${devTopic}:sub-crew`,
+                        endpoint: 'arn:aws:lambda:eu-north-1:123456789012:function:w1-crew-get',
+                    },
+                ]),
+                { message: /its ARN is not that of a subscription to w1-rental-created/u },
+            )
+            await assert.rejects(
+                executeDestroy(context, 'w1', [{ kind: 'api', name: 'w1-crew', id: 'a1/../a5' }]),
+                { message: /its id is not an API id/u },
+            )
+            await assert.rejects(
+                executeDestroy(context, 'w1', [
+                    { kind: 'function', name: 'w1-crew/../dev-crew-get' },
+                ]),
+                { message: /its name is not one a deploy gives/u },
+            )
+            await assert.rejects(
+                executeDestroy(context, 'w1', [
+                    { kind: 'log group', name: '/aws/lambda/w1-crew-get?x' },
+                ]),
+                { message: /its name is not one a deploy gives/u },
             )
             assert.deepStrictEqual(aws.calls, [])
         } finally {
@@ -347,7 +407,7 @@ describe('destroy', () => {
             const plan = await destroy(logged, 'w1', { dryRun: true })
 
             assert.deepStrictEqual(lines.slice(-2), [
-                '17 to delete, 10 skipped',
+                '17 to delete, 12 skipped',
                 'dry run: nothing deleted',
             ])
             assert.strictEqual(plan.deletions.length, 17)
@@ -376,10 +436,12 @@ describe('destroy', () => {
                     'skip api w1-borrowed (a4): tagged environment=dev',
                     'skip function w1-crew-borrowed: tagged environment=dev',
                     'skip function w1-by-hand: no environment tag',
-                    'skip topic arn:sns:w1-by-hand: no environment tag',
+                    'skip topic arn:aws:sns:eu-north-1:123456789012:w1-by-hand: no environment tag',
                     'skip role w1-attached-role: managed policies were attached by hand (AdministratorAccess)',
                     'skip role w1-by-hand-role: no environment tag',
                     'skip role w1-admin: not named as a deploy names a role',
+                    'skip log group /aws/lambda/w1-crew-borrowed: its function is skipped',
+                    'skip log group /aws/lambda/w1-by-hand: its function is skipped',
                 ],
             )
             assert.deepStrictEqual(
@@ -387,14 +449,14 @@ describe('destroy', () => {
                 [
                     'delete targets w1-crew-sweep of rule w1-crew-sweep',
                     'delete rule w1-crew-sweep',
-                    'delete subscription arn:sns:w1-rental-created:sub-crew of arn:aws:lambda:eu-north-1:123456789012:function:w1-crew-get',
-                    'delete subscription arn:sns:w1-rental-created:sub-crew-v2 of arn:aws:lambda:eu-north-1:123456789012:function:w1-crew-v2-get',
+                    'delete subscription arn:aws:sns:eu-north-1:123456789012:w1-rental-created:sub-crew of arn:aws:lambda:eu-north-1:123456789012:function:w1-crew-get',
+                    'delete subscription arn:aws:sns:eu-north-1:123456789012:w1-rental-created:sub-crew-v2 of arn:aws:lambda:eu-north-1:123456789012:function:w1-crew-v2-get',
                     'delete api w1-crew (a1)',
                     'delete api w1-crew-v2 (a2)',
                     'delete function w1-crew-get',
                     'delete function w1-crew-sweep',
                     'delete function w1-crew-v2-get',
-                    'delete topic arn:sns:w1-rental-created',
+                    'delete topic arn:aws:sns:eu-north-1:123456789012:w1-rental-created',
                     'delete policy w1-crew-policy of role w1-crew-role',
                     'delete role w1-crew-role',
                     'delete policy w1-crew-v2-policy of role w1-crew-v2-role',
@@ -408,14 +470,14 @@ describe('destroy', () => {
             assert.deepStrictEqual(writes.map(summary), [
                 'events RemoveTargets {"Rule":"w1-crew-sweep","Ids":["w1-crew-sweep"]}',
                 'events DeleteRule {"Name":"w1-crew-sweep"}',
-                'sns Unsubscribe {"SubscriptionArn":"arn:sns:w1-rental-created:sub-crew"}',
-                'sns Unsubscribe {"SubscriptionArn":"arn:sns:w1-rental-created:sub-crew-v2"}',
+                'sns Unsubscribe {"SubscriptionArn":"arn:aws:sns:eu-north-1:123456789012:w1-rental-created:sub-crew"}',
+                'sns Unsubscribe {"SubscriptionArn":"arn:aws:sns:eu-north-1:123456789012:w1-rental-created:sub-crew-v2"}',
                 'apigateway DELETE /v2/apis/a1',
                 'apigateway DELETE /v2/apis/a2',
                 'lambda DELETE /2015-03-31/functions/w1-crew-get',
                 'lambda DELETE /2015-03-31/functions/w1-crew-sweep',
                 'lambda DELETE /2015-03-31/functions/w1-crew-v2-get',
-                'sns DeleteTopic {"TopicArn":"arn:sns:w1-rental-created"}',
+                'sns DeleteTopic {"TopicArn":"arn:aws:sns:eu-north-1:123456789012:w1-rental-created"}',
                 'iam DeleteRolePolicy {"RoleName":"w1-crew-role","PolicyName":"w1-crew-policy"}',
                 'iam DeleteRole {"RoleName":"w1-crew-role"}',
                 'iam DeleteRolePolicy {"RoleName":"w1-crew-v2-role","PolicyName":"w1-crew-v2-policy"}',
@@ -450,13 +512,14 @@ describe('destroy', () => {
                     'skip function w1-crew-v2-get: tagged service=crew-v2',
                     'skip function w1-crew-borrowed: tagged environment=dev',
                     'skip log group /aws/lambda/w1-crew-retired: no function of crew to be deleted has that name',
-                    'skip log group /aws/lambda/w1-crew-v2-get: no function of crew to be deleted has that name',
+                    'skip log group /aws/lambda/w1-crew-v2-get: its function is skipped',
+                    'skip log group /aws/lambda/w1-crew-borrowed: its function is skipped',
                 ],
             )
             assert.deepStrictEqual(aws.calls.filter(call => !isRead(call)).map(summary), [
                 'events RemoveTargets {"Rule":"w1-crew-sweep","Ids":["w1-crew-sweep"]}',
                 'events DeleteRule {"Name":"w1-crew-sweep"}',
-                'sns Unsubscribe {"SubscriptionArn":"arn:sns:w1-rental-created:sub-crew"}',
+                'sns Unsubscribe {"SubscriptionArn":"arn:aws:sns:eu-north-1:123456789012:w1-rental-created:sub-crew"}',
                 'apigateway DELETE /v2/apis/a1',
                 'lambda DELETE /2015-03-31/functions/w1-crew-get',
                 'lambda DELETE /2015-03-31/functions/w1-crew-sweep',
