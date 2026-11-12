@@ -132,3 +132,38 @@ function destroyArguments(
         dryRun: values['dry-run'] ?? false,
     }
 }
+
+export const publishLayerUsage = `Usage:
+  publish-layer <zip> <name> [<bucket>] [--account <id>]
+
+    Publishes <zip> as a new version of the layer <name> and prints the version's ARN.
+    Credentials are the keys in the environment, else those of the profile AWS_PROFILE
+    names, else of [default]. The caller's ARN is printed before anything is written.
+
+    <bucket>            An S3 bucket in the same region, for a zip over 50 MB.
+    --account <id>      The twelve-digit AWS account to publish in. Credentials of another
+                        account are refused before anything is written.`
+
+export function parsePublishLayerArguments(args: string[]) {
+    const {
+        positionals: [zipPath, name, bucket, ...surplus],
+        values: { account },
+    } = parseArgs({
+        args,
+        options: { account: { type: 'string' } },
+        allowPositionals: true,
+        strict: true,
+    })
+    if (!zipPath || !name) {
+        throw new Error(`Please name the zip and the layer.\n\n${publishLayerUsage}`)
+    }
+    if (surplus.length !== 0) {
+        throw new Error(`Unexpected argument ${surplus.join(' ')}.\n\n${publishLayerUsage}`)
+    }
+    if (account !== undefined && !/^\d{12}$/u.test(account)) {
+        throw new Error(
+            `--account must be twelve digits, not ${JSON.stringify(account)}.\n\n${publishLayerUsage}`,
+        )
+    }
+    return { zipPath, name, bucket, account }
+}

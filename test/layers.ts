@@ -1,7 +1,8 @@
 /* eslint-disable unicorn/no-global-object-property-assignment */
 // spell-checker: ignore rendr AKIDEXAMPLE
 import assert from 'node:assert/strict'
-import { desiredLayers, publishLayer } from '../lib/aws/services/layers.js'
+import { parsePublishLayerArguments } from '../lib/arguments.js'
+import { desiredLayers, publishLayer, publishLayerAs } from '../lib/aws/services/layers.js'
 
 describe('layers', () => {
     const functionNames = ['render', 'get']
@@ -98,7 +99,7 @@ describe('publish layer', () => {
             requests.push({
                 method: init?.method ?? 'GET',
                 url: new URL(input instanceof Request ? input.url : input).href,
-                body: typeof body === 'string' ? JSON.parse(body) : body,
+                body: typeof body === 'string' && body.startsWith('{') ? JSON.parse(body) : body,
             })
             const response: unknown = responses[requests.length - 1]
             return Promise.resolve(
@@ -109,6 +110,105 @@ describe('publish layer', () => {
 
     afterEach(() => {
         globalThis.fetch = realFetch
+    })
+
+    const identity = {
+        GetCallerIdentityResponse: {
+            GetCallerIdentityResult: {
+                Account: '123456789012',
+                Arn: 'arn:aws:iam::123456789012:user/publisher',
+            },
+        },
+    }
+
+    it('reads the publish-layer command line', () => {
+        assert.deepStrictEqual(parsePublishLayerArguments(['chromium.zip', 'chromium']), {
+            zipPath: 'chromium.zip',
+            name: 'chromium',
+            bucket: undefined,
+            account: undefined,
+        })
+        assert.deepStrictEqual(
+            parsePublishLayerArguments([
+                '--account',
+                '012345678901',
+                'chromium.zip',
+                'chromium',
+                'layer-uploads',
+            ]),
+            {
+                zipPath: 'chromium.zip',
+                name: 'chromium',
+                bucket: 'layer-uploads',
+                account: '012345678901',
+            },
+        )
+    })
+
+    it('refuses a publish-layer command line it cannot read', () => {
+        assert.throws(() => parsePublishLayerArguments(['chromium.zip']), {
+            message: /^Please name the zip and the layer\./u,
+        })
+        assert.throws(() => parsePublishLayerArguments(['a.zip', 'a', 'bucket', 'more']), {
+            message: /^Unexpected argument more\./u,
+        })
+        assert.throws(() => parsePublishLayerArguments(['a.zip', 'a', '--force']), {
+            message: /--force/u,
+        })
+        assert.throws(() => parsePublishLayerArguments(['a.zip', 'a', '--account']), {
+            message: /--account/u,
+        })
+        for (const account of ['', '12345678901', '1234567890123', 'production', '--other']) {
+            assert.throws(
+                () => parsePublishLayerArguments(['a.zip', 'a', `--account=${account}`]),
+                { message: /^--account must be twelve digits/u },
+            )
+        }
+    })
+
+    it('says who the caller is before it publishes', async () => {
+        const lines: string[] = []
+        answer([
+            identity,
+            { LayerVersions: [] },
+            { LayerVersionArn: 'arn:aws:lambda:eu-north-1:123456789012:layer:chromium:1' },
+        ])
+
+        const arn = await publishLayerAs(
+            {
+                ...context,
+                log: {
+                    ...context.log,
+                    trace(message: string) {
+                        lines.push(`${message} (after ${requests.length} requests)`)
+                    },
+                },
+            },
+            zip,
+            'chromium',
+            undefined,
+            '123456789012',
+        )
+
+        assert.strictEqual(arn, 'arn:aws:lambda:eu-north-1:123456789012:layer:chromium:1')
+        assert.strictEqual(
+            lines[0],
+            'publish layer chromium as arn:aws:iam::123456789012:user/publisher (after 1 requests)',
+        )
+        assert.deepStrictEqual(
+            requests.map(r => `${r.method} ${new URL(r.url).hostname.split('.', 1)[0] ?? ''}`),
+            ['POST sts', 'GET lambda', 'POST lambda'],
+        )
+    })
+
+    it('refuses to publish in another account than --account names, having asked only who the caller is', async () => {
+        answer([identity])
+
+        await assert.rejects(publishLayerAs(context, zip, 'chromium', 'uploads', '999999999999'), {
+            message:
+                'Refusing to publish layer chromium: --account names 999999999999, but the credentials reach account 123456789012 as arn:aws:iam::123456789012:user/publisher. Nothing was changed.',
+        })
+        assert.strictEqual(requests.length, 1)
     })
 
     it('refuses a name Lambda would refuse', async () => {

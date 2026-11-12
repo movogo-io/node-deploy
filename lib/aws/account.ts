@@ -53,3 +53,19 @@ export async function checkSlot(intent: string, stage: string, glueFile: string)
         )
     }
 }
+
+/**
+The account check of a command that has no glue file to name its account: the caller's ARN is
+traced before the command's first write, and an account the caller named is compared with the
+one the credentials reach.
+*/
+export async function checkCaller(context: Context, intent: string, account: string | undefined) {
+    const caller = await callerIdentity(context)
+    if (account !== undefined && account !== caller.account) {
+        throw new Error(
+            `Refusing to ${intent}: --account names ${account}, but the credentials reach account ${caller.account} as ${caller.arn}. Nothing was changed.`,
+        )
+    }
+    context.log.trace(`${intent} as ${caller.arn}`)
+    return caller
+}

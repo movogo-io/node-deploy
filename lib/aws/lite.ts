@@ -4,8 +4,12 @@ import { createHash, createHmac } from 'node:crypto'
 import { setTimeout } from 'node:timers/promises'
 import { type AwsEnv, resolveCredentials } from './credentials.js'
 
-export function localAwsEnv(region: string | undefined, stage: string): Promise<AwsEnv> {
-    return resolveCredentials(region, stage)
+export function localAwsEnv(
+    region: string | undefined,
+    stage: string,
+    missingProfileRemedy?: string,
+): Promise<AwsEnv> {
+    return resolveCredentials(region, stage, undefined, missingProfileRemedy)
 }
 
 export type Context = {

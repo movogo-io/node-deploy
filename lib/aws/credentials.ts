@@ -25,6 +25,7 @@ export async function resolveCredentials(
     region: string | undefined,
     stage: string,
     sources: CredentialSources = localSources,
+    missingProfileRemedy = 'Add a profile named like the stage or set AWS_PROFILE; [default] is never used in its place.',
 ): Promise<AwsEnv> {
     const { env } = sources
     const profile = profileFor(env, stage)
@@ -49,7 +50,7 @@ export async function resolveCredentials(
     const settings = await profileSettings(sources, profile)
     if (!settings) {
         throw new Error(
-            `AWS profile ${profile} not found in ${configFile(env)} or ${credentialsFile(env)}. Add a profile named like the stage or set AWS_PROFILE; [default] is never used in its place.`,
+            `AWS profile ${profile} not found in ${configFile(env)} or ${credentialsFile(env)}. ${missingProfileRemedy}`,
         )
     }
     const AWS_REGION = regionGiven ?? settings.region ?? noRegion(profile)

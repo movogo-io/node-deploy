@@ -48,6 +48,21 @@ region = eu-north-1
         )
     })
 
+    it('names the remedy of the command that has no stage when its profile is missing', async () => {
+        await assert.rejects(
+            resolveCredentials(
+                undefined,
+                'default',
+                { env: paths, readFile: () => Promise.resolve(undefined), exportCredentials },
+                'Set AWS_PROFILE to a profile that is there.',
+            ),
+            {
+                message:
+                    'AWS profile default not found in /aws/config or /aws/credentials. Set AWS_PROFILE to a profile that is there.',
+            },
+        )
+    })
+
     it('refuses a profile that is in neither file when the files are missing', async () => {
         await assert.rejects(
             resolveCredentials(undefined, 'dev', {

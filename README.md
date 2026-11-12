@@ -72,7 +72,7 @@ only loses layers stops importing from them before they go. The deploy principal
 ## Publishing a layer
 
 ```sh
-publish-layer <zip> <name> [bucket]
+publish-layer <zip> <name> [<bucket>] [--account <id>]
 ```
 
 Publishes the zip as a new version of the layer `<name>` and prints the version's ARN, for the glue.
@@ -80,9 +80,11 @@ A version already published from the same zip is printed instead of publishing a
 not. Lambda takes at most 50 MB in the request; a larger zip needs an S3 bucket in the same region,
 which it is uploaded to and removed from once published. Credentials come from the environment, or
 from the profile `AWS_PROFILE` names (else `default`), a role profile included, and a profile that
-is not there is refused; the printed ARN names the account it went to. It needs
-`lambda:ListLayerVersions` and `lambda:PublishLayerVersion`, and `s3:PutObject` and
-`s3:DeleteObject` on the bucket.
+is not there is refused. It prints the caller's ARN before it writes anything, and with
+`--account <twelve digits>` it refuses credentials of another account before any write; the printed
+layer ARN names the account it went to. It needs `lambda:ListLayerVersions` and
+`lambda:PublishLayerVersion`, and `s3:PutObject` and `s3:DeleteObject` on the bucket; asking STS
+who the caller is needs no permission.
 
 A Node.js layer zip has its packages under `nodejs/node_modules/`. For Chromium:
 

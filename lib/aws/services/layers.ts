@@ -1,6 +1,7 @@
 import { jsonResponse, okResponse } from '@riddance/fetch'
 import { createHash } from 'node:crypto'
 import { functionLists } from '../../glue.js'
+import { checkCaller } from '../account.js'
 import { type Context, awsBinaryRequest, awsRequest } from '../lite.js'
 
 export type Layers = { [functionName: string]: string[] }
@@ -34,6 +35,21 @@ export function desiredLayers(functionNames: string[], glueAws: unknown): Layers
         }
     }
     return layers
+}
+
+/**
+publishLayer for the command line: who the caller is comes first, so that a profile pointing at
+another account than meant shows, or with `account` is refused, before anything is uploaded.
+*/
+export async function publishLayerAs(
+    context: Context,
+    zip: Buffer,
+    name: string,
+    bucket: string | undefined,
+    account: string | undefined,
+) {
+    await checkCaller(context, `publish layer ${name}`, account)
+    return await publishLayer(context, zip, name, bucket)
 }
 
 /**
