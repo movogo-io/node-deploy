@@ -80,6 +80,11 @@ export function isSlot(stage: string) {
     return /^w[1-9]$/u.test(stage)
 }
 
+// `stage-service-` is used as a name prefix, so the name may hold nothing that widens it.
+export function isServiceName(service: string) {
+    return /^[A-Za-z0-9][\w-]*$/u.test(service)
+}
+
 function assertSlot(stage: string) {
     if (!isSlot(stage)) {
         throw new Error(
@@ -100,7 +105,7 @@ export async function planDestroy(
     service?: string,
 ): Promise<Plan> {
     assertSlot(stage)
-    if (service !== undefined && !/^[\w-]+$/u.test(service)) {
+    if (service !== undefined && !isServiceName(service)) {
         throw new Error(`--service must name a service, not ${JSON.stringify(service)}.`)
     }
     const scope = service === undefined ? `${stage}-` : `${stage}-${service}-`

@@ -16,6 +16,45 @@ describe('arguments', () => {
         })
     })
 
+    it('refuses a stage that is empty, a path or holds a separator', () => {
+        for (const stage of ['', ' ', '.', '../api-rentals', 'dev.rentals', 'dev/x', 'w1 ']) {
+            assert.throws(() => parseArguments(['.', stage]), {
+                message: new RegExp(
+                    `^${RegExp.escape(JSON.stringify(stage))} is not a stage name`,
+                    'u',
+                ),
+            })
+        }
+        assert.throws(() => parseArguments(['../api-rentals']), {
+            message: /^"\.\.\/api-rentals" is not a stage name/u,
+        })
+    })
+
+    it('refuses a deploy that reads like a mistyped destroy', () => {
+        for (const args of [
+            ['w1', 'destroy'],
+            ['.', 'w1', 'destroy'],
+            ['Destroy', 'w1'],
+            ['DESTROY', 'w1'],
+            [' destroy', 'w1'],
+            ['destroy ', 'w1'],
+        ]) {
+            assert.throws(() => parseArguments(args), {
+                message: /is neither a deploy nor a destroy/u,
+            })
+        }
+    })
+
+    it('deploys a directory named destroy when it is written as a path', () => {
+        assert.deepStrictEqual(parseArguments(['./destroy', 'dev']), {
+            command: 'deploy',
+            path: './destroy',
+            stage: 'dev',
+            glueFile: undefined,
+            stageDir: undefined,
+        })
+    })
+
     it('refuses more arguments than it reads', () => {
         assert.throws(() => parseArguments(['.', 'dev', 'glue.json', 'extra']), {
             message: /^Unexpected argument extra\./u,

@@ -1,5 +1,5 @@
 import { parseArgs } from 'node:util'
-import { isSlot } from './aws/destroy.js'
+import { isServiceName, isSlot } from './aws/destroy.js'
 
 export const usage = `Usage:
   deploy [<path>] <stage> [<glue file>] [--stage-dir <dir>]
@@ -45,19 +45,41 @@ export function parseArguments(args: string[]) {
         throw new Error(`--service and --dry-run belong to destroy.\n\n${usage}`)
     }
     const [pathOrStage, stage, glueFile, ...surplus] = positionals
-    if (!pathOrStage) {
+    if (pathOrStage === undefined) {
         throw new Error(`Please specify target environment name.\n\n${usage}`)
     }
     if (surplus.length !== 0) {
         throw new Error(`Unexpected argument ${surplus.join(' ')}.\n\n${usage}`)
     }
+    const misplaced = positionals.find(isDestroyLike)
+    if (misplaced !== undefined) {
+        throw new Error(
+            `${JSON.stringify(misplaced)} is neither a deploy nor a destroy: destroy is written exactly so and comes first. A directory of that name is deployed as ./${misplaced.trim()}.\n\n${usage}`,
+        )
+    }
     return {
         command: 'deploy' as const,
-        path: stage ? pathOrStage : undefined,
-        stage: stage ?? pathOrStage,
+        path: stage === undefined ? undefined : pathOrStage,
+        stage: stageName(stage ?? pathOrStage),
         glueFile,
         stageDir: values['stage-dir'],
     }
+}
+
+// A deploy must not be what a mistyped destroy turns into, nor a destroy what a deploy does.
+function isDestroyLike(argument: string) {
+    return argument.trim().toLowerCase() === 'destroy'
+}
+
+// The stage starts the name of everything a deploy makes, so an empty one, a path given in its
+// place or a separator in it would name resources under no stage or under another one's prefix.
+function stageName(stage: string) {
+    if (!/^[A-Za-z0-9][A-Za-z0-9_-]*$/u.test(stage)) {
+        throw new Error(
+            `${JSON.stringify(stage)} is not a stage name: letters, digits, - and _ only.\n\n${usage}`,
+        )
+    }
+    return stage
 }
 
 function destroyArguments(
@@ -74,6 +96,11 @@ function destroyArguments(
     }
     if (values['stage-dir'] !== undefined) {
         throw new Error(`--stage-dir belongs to a deploy.\n\n${usage}`)
+    }
+    if (values.service !== undefined && !isServiceName(values.service)) {
+        throw new Error(
+            `--service must name a service, not ${JSON.stringify(values.service)}.\n\n${usage}`,
+        )
     }
     return {
         command: 'destroy' as const,

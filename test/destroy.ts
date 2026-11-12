@@ -281,6 +281,11 @@ describe('destroy', () => {
         assert.throws(() => parseArguments(['destroy', 'w1', '--stage-dir', '/builds']), {
             message: /^--stage-dir belongs to a deploy\./u,
         })
+        for (const service of ['', '*', '-', 'crew/x', 'crew role', 'crew.v2']) {
+            assert.throws(() => parseArguments(['destroy', 'w1', `--service=${service}`]), {
+                message: /^--service must name a service/u,
+            })
+        }
         assert.throws(() => parseArguments(['w1', '--dry-run']), {
             message: /^--service and --dry-run belong to destroy\./u,
         })
