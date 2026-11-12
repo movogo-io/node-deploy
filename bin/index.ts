@@ -3,7 +3,7 @@
 import { deploy, destroy } from '../index.js'
 import { localAwsEnv } from '../lib/aws/lite.js'
 import { parseArguments } from '../lib/arguments.js'
-import { glueFilePath } from '../lib/glue.js'
+import { GlueFileError } from '../lib/glue.js'
 
 const log = {
     trace: (message: string) => {
@@ -18,15 +18,28 @@ const log = {
 }
 
 const args = parsed()
-if (args.command === 'destroy') {
-    await destroy({ env: await localAwsEnv(undefined, args.stage), log }, args.stage, {
-        service: args.service,
-        dryRun: args.dryRun,
-        glueFile: glueFilePath(process.cwd(), args.glueFile),
-    })
-    console.log('done.')
-} else {
-    await deployService(args)
+try {
+    if (args.command === 'destroy') {
+        await destroy({ env: await localAwsEnv(undefined, args.stage), log }, args.stage, {
+            service: args.service,
+            dryRun: args.dryRun,
+            glueFile: args.glueFile,
+        })
+        console.log('done.')
+    } else {
+        await deployService(args)
+    }
+} catch (e) {
+    if (!(e instanceof GlueFileError)) {
+        throw e
+    }
+    console.error(e.message)
+    if (args.command === 'deploy' && args.glueFile === undefined) {
+        console.error(
+            "Try to see if there isn't a glue project you can clone next to this project, or name the glue file last.",
+        )
+    }
+    process.exit(1)
 }
 
 async function deployService({
@@ -40,48 +53,37 @@ async function deployService({
     glueFile?: string
     stageDir?: string
 }) {
-    try {
-        const { logLink, host, accountWarning } = await deploy(
-            {
-                env: {
-                    ...(await localAwsEnv(undefined, envName)),
-                    DEPLOY_PERMISSIONS_BOUNDARY: process.env.DEPLOY_PERMISSIONS_BOUNDARY,
-                },
-                log,
+    const { logLink, host, accountWarning } = await deploy(
+        {
+            env: {
+                ...(await localAwsEnv(undefined, envName)),
+                DEPLOY_PERMISSIONS_BOUNDARY: process.env.DEPLOY_PERMISSIONS_BOUNDARY,
             },
-            envName,
-            path,
-            glueFile,
-            undefined,
-            stageDir,
-        )
+            log,
+        },
+        envName,
+        path,
+        glueFile,
+        undefined,
+        stageDir,
+    )
 
-        console.log('done.')
+    console.log('done.')
 
-        if (host) {
-            console.log()
-            console.log(`hosting on ${host}`)
-        }
+    if (host) {
+        console.log()
+        console.log(`hosting on ${host}`)
+    }
 
-        if (logLink) {
-            console.log()
-            console.log(`See logs here: ${logLink}`)
-        }
+    if (logLink) {
+        console.log()
+        console.log(`See logs here: ${logLink}`)
+    }
 
-        // Printed last: the first time it stood above everything the deploy traced.
-        if (accountWarning !== undefined) {
-            console.log()
-            console.warn(accountWarning)
-        }
-    } catch (e) {
-        const fileError = e as { code?: string; path?: string }
-        if (fileError.code === 'ENOENT' && fileError.path?.endsWith('glue.json')) {
-            console.error(
-                "Glue not found. Try to see if there isn't a glue project you can clone next to this project.",
-            )
-            process.exit(1)
-        }
-        throw e
+    // Printed last: the first time it stood above everything the deploy traced.
+    if (accountWarning !== undefined) {
+        console.log()
+        console.warn(accountWarning)
     }
 }
 

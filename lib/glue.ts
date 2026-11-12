@@ -10,10 +10,10 @@ export type Resolver = {
 export async function getGlue(path: string, prefix: string, resolver: Resolver, gluePath?: string) {
     const [packageJson, glueJson] = await Promise.all([
         readFile(join(path, 'package.json'), 'utf-8'),
-        readFile(glueFilePath(path, gluePath), 'utf-8'),
+        readGlueFile(glueFilePath(path, gluePath)),
     ])
     const { name: service } = JSON.parse(packageJson) as { name: string }
-    const glue = JSON.parse(glueJson) as {
+    const glue = glueJson as {
         implementations: Implementations
         websites: {
             [key: string]: string[]
@@ -50,13 +50,32 @@ export function glueFilePath(path: string, gluePath?: string) {
 }
 
 /**
+A glue file that is missing, unreadable or no JSON. The command prints its message alone: the
+path is what the reader needs, not the stack of an ENOENT.
+*/
+export class GlueFileError extends Error {
+    name = 'GlueFileError'
+}
+
+async function readGlueFile(glueFile: string): Promise<unknown> {
+    try {
+        return JSON.parse(await readFile(glueFile, 'utf-8'))
+    } catch (e) {
+        throw new GlueFileError(
+            `Cannot read glue file ${glueFile}: ${Error.isError(e) ? e.message : String(e)}`,
+            { cause: e },
+        )
+    }
+}
+
+/**
 What the glue file says about its stage's account, in `aws` at the top level, once for the file:
 `accountId`, as a string so that an id starting with zero survives JSON, and `slots`, the slots
 that account may hold. A key the tool does not know is refused: `accountID` or `account` would
 otherwise read as no account declared, and the check the author asked for would silently not run.
 */
 export async function declaredAws(glueFile: string) {
-    const glue: unknown = JSON.parse(await readFile(glueFile, 'utf-8'))
+    const glue = await readGlueFile(glueFile)
     if (glue === null || typeof glue !== 'object' || !('aws' in glue)) {
         return { accountId: undefined, slots: [] }
     }

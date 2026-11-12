@@ -25,7 +25,7 @@ export const usage = `Usage:
     aws.slots beside it lists the slots (w1 to w9) that account may hold. A deploy to a slot
     is refused unless the glue file lists that slot; other stages need no entry.
 
-  deploy destroy <stage> [--glue <file>] [--service <name>] [--dry-run]
+  deploy destroy <stage> --glue <file> [--service <name>] [--dry-run]
 
     Deletes what deploys made on the slot <stage>, which must be one of w1 to w9: rules and
     their targets, functions, APIs, topics and subscriptions, roles and log groups, each only
@@ -34,7 +34,7 @@ export const usage = `Usage:
     The whole list is printed first, with what was skipped and why, and only that list is
     deleted.
 
-    --glue <file>       The stage's glue file (default: ../glue/glue.json). It must list
+    --glue <file>       The stage's glue file, required: destroy guesses none. It must list
                         <stage> in aws.slots and declare aws.accountId, and the credentials
                         must be of that account.
     --service <name>    Only what belongs to that service; topics are kept.
@@ -117,6 +117,11 @@ function destroyArguments(
     if (values.service !== undefined && !isServiceName(values.service)) {
         throw new Error(
             `--service must name a service, not ${JSON.stringify(values.service)}.\n\n${usage}`,
+        )
+    }
+    if (values.glue === undefined) {
+        throw new Error(
+            `destroy needs --glue <file>, the glue file that lists ${stage} in aws.slots; it guesses none.\n\n${usage}`,
         )
     }
     return {

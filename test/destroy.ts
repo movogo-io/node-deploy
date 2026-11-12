@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { parseArguments } from '../lib/arguments.js'
 import { destroy, executeDestroy } from '../lib/aws/destroy.js'
+import { GlueFileError } from '../lib/glue.js'
 import { type AwsCall, context, stubAws } from './lib/aws.js'
 
 // An account holding the slot w1 beside dev and w10, with hand-made and wrongly tagged leftovers
@@ -307,6 +308,17 @@ describe('destroy', () => {
         assert.throws(() => parseArguments(['destroy']), {
             message: /^destroy only removes the slots w1 to w9, not ""/u,
         })
+        for (const args of [
+            ['destroy', 'w1'],
+            ['destroy', 'w1', '--dry-run'],
+            ['destroy', 'w1', '--service', 'crew'],
+        ]) {
+            assert.throws(() => parseArguments(args), {
+                message:
+                    /^destroy needs --glue <file>, the glue file that lists w1 in aws\.slots; it guesses none\./u,
+            })
+        }
+        assert.throws(() => parseArguments(['destroy', 'w1', '--glue']), { message: /--glue/u })
         assert.throws(() => parseArguments(['destroy', 'w1', 'w2']), {
             message: /^Unexpected argument w2\./u,
         })
@@ -333,10 +345,10 @@ describe('destroy', () => {
     })
 
     it('reads the destroy command line', () => {
-        assert.deepStrictEqual(parseArguments(['destroy', 'w1']), {
+        assert.deepStrictEqual(parseArguments(['destroy', 'w1', '--glue=glue.w1.json']), {
             command: 'destroy',
             stage: 'w1',
-            glueFile: undefined,
+            glueFile: 'glue.w1.json',
             service: undefined,
             dryRun: false,
         })
@@ -452,6 +464,30 @@ describe('destroy', () => {
                 ]),
                 { message: /its name is not one a deploy gives/u },
             )
+            assert.deepStrictEqual(aws.calls, [])
+        } finally {
+            aws.restore()
+        }
+    })
+
+    it('names a glue file that is missing or no JSON in one line, before any request', async () => {
+        const missing = join(directory, 'glue.missing.json')
+        const broken = join(directory, 'glue.broken.json')
+        await writeFile(broken, '{ "aws": ')
+        const aws = stubAws(answer)
+        try {
+            for (const file of [missing, broken]) {
+                await assert.rejects(
+                    destroy(context, 'w1', { dryRun: true, glueFile: file }),
+                    (e: unknown) =>
+                        e instanceof GlueFileError &&
+                        e.message.startsWith(`Cannot read glue file ${file}: `) &&
+                        !e.message.includes('\n'),
+                )
+            }
+            await assert.rejects(destroy(context, 'w1', { dryRun: true, glueFile: missing }), {
+                message: /: ENOENT/u,
+            })
             assert.deepStrictEqual(aws.calls, [])
         } finally {
             aws.restore()
