@@ -390,7 +390,7 @@ function checkStatement(statement: unknown, at: string): PolicyStatement {
     const unrendered = Object.keys(statement).filter(key => !renderedKeys.has(key))
     if (unrendered.length !== 0) {
         throw new Error(
-            `${at} carries ${unrendered.join(', ')}, which a role policy cannot hold: only Effect, Resource, Action and Condition are rendered. Versions before 0.5.0 dropped such a key without saying so, so removing it from the glue leaves the role as it is.`,
+            `${at} carries ${unrendered.join(', ')}, which a role policy cannot hold: only Effect, Resource, Action and Condition are rendered. Versions before 0.6.0 dropped such a key without saying so, so removing it from the glue leaves the role as it is.`,
         )
     }
     const { Effect, Resource, Action, Condition } = statement
