@@ -1,13 +1,13 @@
 import { jsonResponse } from '@riddance/fetch'
 import { type Context, awsFormRequest } from '../lite.js'
 
-export async function callerArn(context: Context) {
+export async function callerIdentity(context: Context) {
     const {
         GetCallerIdentityResponse: {
-            GetCallerIdentityResult: { Arn: arn },
+            GetCallerIdentityResult: { Arn: arn, Account: account },
         },
     } = await jsonResponse<{
-        GetCallerIdentityResponse: { GetCallerIdentityResult: { Arn: string } }
+        GetCallerIdentityResponse: { GetCallerIdentityResult: { Arn: string; Account: string } }
     }>(
         awsFormRequest(
             context,
@@ -18,5 +18,5 @@ export async function callerArn(context: Context) {
         ),
         'Error getting caller identity.',
     )
-    return arn
+    return { arn, account }
 }

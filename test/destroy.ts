@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict'
+import { mkdir, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { parseArguments } from '../lib/arguments.js'
 import { destroy, executeDestroy } from '../lib/aws/destroy.js'
 import { type AwsCall, context, stubAws } from './lib/aws.js'
@@ -74,7 +77,10 @@ function answer({ method, service, path, action, parameters }: AwsCall): unknown
         case 'sts GetCallerIdentity':
             return {
                 GetCallerIdentityResponse: {
-                    GetCallerIdentityResult: { Arn: 'arn:aws:sts::123456789012:assumed-role/w1' },
+                    GetCallerIdentityResult: {
+                        Account: '123456789012',
+                        Arn: 'arn:aws:sts::123456789012:assumed-role/w1',
+                    },
                 },
             }
         case 'lambda /2015-03-31/functions/':
@@ -241,6 +247,16 @@ function logging() {
 }
 
 describe('destroy', () => {
+    const directory = join(tmpdir(), 'riddance', 'deploy-test-destroy')
+    const glueFile = join(directory, 'glue.w1.json')
+    const glueFileWithoutAccount = join(directory, 'glue.without-account.json')
+
+    before(async () => {
+        await mkdir(directory, { recursive: true })
+        await writeFile(glueFile, JSON.stringify({ aws: { accountId: '123456789012' } }))
+        await writeFile(glueFileWithoutAccount, JSON.stringify({ services: {} }))
+    })
+
     it('refuses every stage that is not literally w1 to w9, before any request', async () => {
         const aws = stubAws(answer)
         try {
@@ -258,7 +274,7 @@ describe('destroy', () => {
                 'xw1',
                 '',
             ]) {
-                await assert.rejects(destroy(context, stage, { dryRun: true }), {
+                await assert.rejects(destroy(context, stage, { dryRun: true, glueFile }), {
                     message: `destroy only removes the slots w1 to w9, not ${JSON.stringify(stage)}; any other stage is removed by hand.`,
                 })
                 await assert.rejects(executeDestroy(context, stage, []), {
@@ -292,6 +308,9 @@ describe('destroy', () => {
                 message: /^--service must name a service/u,
             })
         }
+        assert.throws(() => parseArguments(['.', 'dev', '--glue', 'glue.dev.json']), {
+            message: /^--glue belongs to destroy; a deploy names its glue file last\./u,
+        })
         assert.throws(() => parseArguments(['w1', '--dry-run']), {
             message: /^--service and --dry-run belong to destroy\./u,
         })
@@ -304,22 +323,37 @@ describe('destroy', () => {
         assert.deepStrictEqual(parseArguments(['destroy', 'w1']), {
             command: 'destroy',
             stage: 'w1',
+            glueFile: undefined,
             service: undefined,
             dryRun: false,
         })
         assert.deepStrictEqual(
-            parseArguments(['destroy', 'w9', '--service', 'crew', '--dry-run']),
-            { command: 'destroy', stage: 'w9', service: 'crew', dryRun: true },
+            parseArguments([
+                'destroy',
+                'w9',
+                '--glue',
+                '../glue/glue.w9.json',
+                '--service',
+                'crew',
+                '--dry-run',
+            ]),
+            {
+                command: 'destroy',
+                stage: 'w9',
+                glueFile: '../glue/glue.w9.json',
+                service: 'crew',
+                dryRun: true,
+            },
         )
     })
 
     it('refuses a service name that could widen the name prefix', async () => {
         const aws = stubAws(answer)
         try {
-            await assert.rejects(destroy(context, 'w1', { service: '', dryRun: true }), {
+            await assert.rejects(destroy(context, 'w1', { service: '', dryRun: true, glueFile }), {
                 message: '--service must name a service, not "".',
             })
-            await assert.rejects(destroy(context, 'w1', { service: '*', dryRun: true }), {
+            await assert.rejects(destroy(context, 'w1', { service: '*', dryRun: true, glueFile }), {
                 message: '--service must name a service, not "*".',
             })
             assert.deepStrictEqual(aws.calls.filter(call => !isRead(call)).map(summary), [])
@@ -411,11 +445,58 @@ describe('destroy', () => {
         }
     })
 
+    it('refuses a glue that declares no account, a dry run too, before any request', async () => {
+        const aws = stubAws(answer)
+        try {
+            for (const dryRun of [true, false]) {
+                await assert.rejects(
+                    destroy(context, 'w1', {
+                        dryRun,
+                        glueFile: glueFileWithoutAccount,
+                        credentials: 'profile w1',
+                    }),
+                    {
+                        message: `Refusing to destroy w1: ${glueFileWithoutAccount} declares no AWS account. Give it "aws": { "accountId": "<the stage's twelve-digit account id>" } at the top level.`,
+                    },
+                )
+            }
+            assert.deepStrictEqual(aws.calls, [])
+        } finally {
+            aws.restore()
+        }
+    })
+
+    it('refuses credentials of another account than the glue declares, having asked only who the caller is', async () => {
+        const aws = stubAws(call =>
+            call.action === 'GetCallerIdentity'
+                ? {
+                      GetCallerIdentityResponse: {
+                          GetCallerIdentityResult: {
+                              Account: '999999999999',
+                              Arn: 'arn:aws:sts::999999999999:assumed-role/w1',
+                          },
+                      },
+                  }
+                : answer(call),
+        )
+        try {
+            await assert.rejects(
+                destroy(context, 'w1', { dryRun: false, glueFile, credentials: 'profile w1' }),
+                {
+                    message: `Refusing to destroy w1: ${glueFile} declares AWS account 123456789012, but profile w1 reaches account 999999999999 as arn:aws:sts::999999999999:assumed-role/w1. Nothing was changed.`,
+                },
+            )
+            assert.deepStrictEqual(aws.calls.map(summary), ['sts GetCallerIdentity'])
+        } finally {
+            aws.restore()
+        }
+    })
+
     it('prints the list and stops on a dry run, having only read', async () => {
         const aws = stubAws(answer)
         const { lines, context: logged } = logging()
         try {
-            const plan = await destroy(logged, 'w1', { dryRun: true })
+            const plan = await destroy(logged, 'w1', { dryRun: true, glueFile })
 
             assert.deepStrictEqual(lines.slice(-2), [
                 '17 to delete, 12 skipped',
@@ -436,7 +517,7 @@ describe('destroy', () => {
         const aws = stubAws(answer)
         const { lines, context: logged } = logging()
         try {
-            await destroy(logged, 'w1', { dryRun: false })
+            await destroy(logged, 'w1', { dryRun: false, glueFile })
 
             assert.deepStrictEqual(
                 lines.filter(line => line.startsWith('skip ')),
@@ -497,6 +578,7 @@ describe('destroy', () => {
                 'logs DeleteLogGroup {"logGroupName":"/aws/lambda/w1-crew-retired"}',
                 'logs DeleteLogGroup {"logGroupName":"/aws/lambda/w1-crew-v2-get"}',
             ])
+            assert.deepStrictEqual(aws.calls.slice(0, 1).map(summary), ['sts GetCallerIdentity'])
             // Nothing is listed again once deleting has begun.
             assert.deepStrictEqual(
                 aws.calls.slice(aws.calls.findIndex(call => !isRead(call))).filter(isRead),
@@ -520,7 +602,7 @@ describe('destroy', () => {
                 : answer(call),
         )
         try {
-            await assert.rejects(destroy(context, 'w1', { dryRun: false }), {
+            await assert.rejects(destroy(context, 'w1', { dryRun: false, glueFile }), {
                 message: 'Error deleting lambda w1-crew-sweep',
             })
 
@@ -544,7 +626,7 @@ describe('destroy', () => {
         const aws = stubAws(answer)
         const { lines, context: logged } = logging()
         try {
-            await destroy(logged, 'w1', { service: 'crew', dryRun: false })
+            await destroy(logged, 'w1', { service: 'crew', dryRun: false, glueFile })
 
             assert.deepStrictEqual(
                 lines.filter(line => line.startsWith('skip ')),

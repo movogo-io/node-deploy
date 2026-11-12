@@ -7,6 +7,19 @@ its dependencies into a single `index.js`.
 deploy <path> <stage> <glue file>
 ```
 
+## The account a stage lives in
+
+```json
+{ "aws": { "accountId": "123456789012" }, "implementations": {}, "services": {} }
+```
+
+A glue file is per stage, and states the AWS account of its stage once, in `aws.accountId` at its
+top level, as a string. Before a deploy changes anything it asks STS which account its credentials
+reach, and refuses when that is another one, naming both accounts and the profile the credentials
+came from. A glue file without `aws.accountId` deploys with a warning. `deploy destroy` refuses
+such a file: it takes the glue file as `--glue <file>` and deletes nothing without a declared,
+matching account.
+
 ## Per-function settings in the glue
 
 A service's block in the stage's glue file can carry an `aws` object. Each setting below is keyed

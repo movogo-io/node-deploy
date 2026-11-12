@@ -66,6 +66,16 @@ export async function resolveCredentials(
     return { AWS_REGION, ...parseExported(await sources.exportCredentials(profile), profile) }
 }
 
+/**
+Where resolveCredentials takes a stage's credentials from, for a message to name.
+*/
+export function credentialsSource(stage: string, env: CredentialSources['env'] = process.env) {
+    if (env.AWS_ACCESS_KEY_ID && env.AWS_SECRET_ACCESS_KEY) {
+        return `the access key in the environment (profile ${profileFor(env, stage)} is not used)`
+    }
+    return `profile ${profileFor(env, stage)}`
+}
+
 function halfKey(env: CredentialSources['env']) {
     if (env.AWS_ACCESS_KEY_ID && !env.AWS_SECRET_ACCESS_KEY) {
         return 'AWS_ACCESS_KEY_ID without AWS_SECRET_ACCESS_KEY'

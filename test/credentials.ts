@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
-import { resolveCredentials } from '../lib/aws/credentials.js'
-import { callerArn } from '../lib/aws/services/sts.js'
+import { credentialsSource, resolveCredentials } from '../lib/aws/credentials.js'
+import { callerIdentity } from '../lib/aws/services/sts.js'
 import { context, stubAws } from './lib/aws.js'
 
 const exportCredentials = () => Promise.reject(new Error('not expected'))
@@ -272,8 +272,29 @@ region = eu-north-1
     })
 })
 
+describe('credentials source', () => {
+    it('names the profile the credentials are taken from, or the key that wins over it', () => {
+        assert.deepStrictEqual(
+            [
+                credentialsSource('w1', {}),
+                credentialsSource('w1', { AWS_PROFILE: 'slot' }),
+                credentialsSource('w1', {
+                    AWS_PROFILE: 'slot',
+                    AWS_ACCESS_KEY_ID: 'key-id',
+                    AWS_SECRET_ACCESS_KEY: 'secret',
+                }),
+            ],
+            [
+                'profile w1',
+                'profile slot',
+                'the access key in the environment (profile slot is not used)',
+            ],
+        )
+    })
+})
+
 describe('caller identity', () => {
-    it('asks STS who the caller is', async () => {
+    it('asks STS who the caller is and in which account', async () => {
         const aws = stubAws(() => ({
             GetCallerIdentityResponse: {
                 GetCallerIdentityResult: {
@@ -284,10 +305,10 @@ describe('caller identity', () => {
             },
         }))
         try {
-            assert.strictEqual(
-                await callerArn(context),
-                'arn:aws:sts::123456789012:assumed-role/slot-runner-w1/session',
-            )
+            assert.deepStrictEqual(await callerIdentity(context), {
+                account: '123456789012',
+                arn: 'arn:aws:sts::123456789012:assumed-role/slot-runner-w1/session',
+            })
             assert.deepStrictEqual(aws.calls, [
                 {
                     method: 'POST',

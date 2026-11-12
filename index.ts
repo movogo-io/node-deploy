@@ -1,10 +1,11 @@
 import { validateEventFilter } from '@movogo-io/host/attributes'
 import { type Reflection, reflect } from '@movogo-io/host/reflect'
+import { checkAccount } from './lib/aws/account.js'
+import { credentialsSource } from './lib/aws/credentials.js'
 import { Resolver } from './lib/aws/resolve.js'
 import { desiredLayers } from './lib/aws/services/layers.js'
-import { callerArn } from './lib/aws/services/sts.js'
 import { getCurrentState, sync } from './lib/aws/sync.js'
-import { getGlue } from './lib/glue.js'
+import { getGlue, glueFilePath } from './lib/glue.js'
 import { buildDirectory, externalModules, stage } from './lib/stage.js'
 
 export { destroy } from './lib/aws/destroy.js'
@@ -23,8 +24,16 @@ export async function deploy(
     glueFile?: string,
     stagePath?: string,
     stageDir?: string,
+    credentials = credentialsSource(envName),
 ) {
-    context.log.trace(`deploying to ${envName} as ${await callerArn(context)}`)
+    const caller = await checkAccount(
+        context,
+        `deploy to ${envName}`,
+        glueFilePath(path, glueFile),
+        credentials,
+        'warn',
+    )
+    context.log.trace(`deploying to ${envName} as ${caller.arn}`)
     const resolver = new Resolver(context)
     const [{ service, implementations, publishTopics, corsSites, env, ...provider }, reflection] =
         await Promise.all([getGlue(path, envName, resolver, glueFile), reflect(path)])

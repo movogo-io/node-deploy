@@ -10,7 +10,7 @@ export type Resolver = {
 export async function getGlue(path: string, prefix: string, resolver: Resolver, gluePath?: string) {
     const [packageJson, glueJson] = await Promise.all([
         readFile(join(path, 'package.json'), 'utf-8'),
-        readFile(gluePath ?? join(path, '..', 'glue', 'glue.json'), 'utf-8'),
+        readFile(glueFilePath(path, gluePath), 'utf-8'),
     ])
     const { name: service } = JSON.parse(packageJson) as { name: string }
     const glue = JSON.parse(glueJson) as {
@@ -43,6 +43,33 @@ export async function getGlue(path: string, prefix: string, resolver: Resolver, 
         env: resolveEnv(env ?? {}, secrets ?? {}, prefix, service, resolver),
         ...provider,
     }
+}
+
+export function glueFilePath(path: string, gluePath?: string) {
+    return gluePath ?? join(path, '..', 'glue', 'glue.json')
+}
+
+/**
+The AWS account the glue file says its stage lives in: `aws.accountId` at the top level, once for
+the file, as a string so that an id starting with zero survives JSON. Undefined when the file
+declares none.
+*/
+export async function declaredAccount(glueFile: string) {
+    const glue: unknown = JSON.parse(await readFile(glueFile, 'utf-8'))
+    if (glue === null || typeof glue !== 'object' || !('aws' in glue)) {
+        return undefined
+    }
+    const { aws } = glue
+    if (aws === null || typeof aws !== 'object' || Array.isArray(aws)) {
+        throw new Error(`aws in ${glueFile} must be an object.`)
+    }
+    if (!('accountId' in aws)) {
+        return undefined
+    }
+    if (typeof aws.accountId !== 'string' || !/^\d{12}$/u.test(aws.accountId)) {
+        throw new Error(`aws.accountId in ${glueFile} must be a string of twelve digits.`)
+    }
+    return aws.accountId
 }
 
 /**

@@ -1,3 +1,5 @@
+import { checkAccount } from './account.js'
+import { credentialsSource } from './credentials.js'
 import { type Context } from './lite.js'
 import { deleteApi, getApis } from './services/api-gateway.js'
 import { deleteLogGroup, listLogGroups } from './services/cloud-watch.js'
@@ -24,7 +26,6 @@ import {
     listTopicArns,
     unsubscribe,
 } from './services/sns.js'
-import { callerArn } from './services/sts.js'
 
 // `name` is always the stage-named thing the deletion belongs to; assertOfStage checks it.
 export type Deletion =
@@ -54,10 +55,16 @@ stage may name them, so none is ever the slot's to delete, whatever it is called
 export async function destroy(
     context: Context,
     stage: string,
-    { service, dryRun }: { service?: string; dryRun: boolean },
+    {
+        service,
+        dryRun,
+        glueFile,
+        credentials = credentialsSource(stage),
+    }: { service?: string; dryRun: boolean; glueFile: string; credentials?: string },
 ) {
     assertSlot(stage)
-    context.log.trace(`destroying ${stage} as ${await callerArn(context)}`)
+    const caller = await checkAccount(context, `destroy ${stage}`, glueFile, credentials, 'refuse')
+    context.log.trace(`destroying ${stage} as ${caller.arn}`)
     const plan = await planDestroy(context, stage, service)
     for (const { kind, name, reason } of plan.skipped) {
         context.log.trace(`skip ${kind} ${name}: ${reason}`)

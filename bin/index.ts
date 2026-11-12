@@ -3,6 +3,7 @@
 import { deploy, destroy } from '../index.js'
 import { localAwsEnv } from '../lib/aws/lite.js'
 import { parseArguments } from '../lib/arguments.js'
+import { glueFilePath } from '../lib/glue.js'
 
 const log = {
     trace: (message: string) => {
@@ -21,6 +22,7 @@ if (args.command === 'destroy') {
     await destroy({ env: await localAwsEnv(undefined, args.stage), log }, args.stage, {
         service: args.service,
         dryRun: args.dryRun,
+        glueFile: glueFilePath(process.cwd(), args.glueFile),
     })
     console.log('done.')
 } else {

@@ -246,7 +246,12 @@ class Log {
         //
     }
     warn(message: string) {
-        if (message.startsWith('CIRCULAR_DEPENDENCY') || message.includes(' -> ')) {
+        if (
+            message.startsWith('CIRCULAR_DEPENDENCY') ||
+            message.includes(' -> ') ||
+            // The fixture glue serves whichever account the tests are pointed at.
+            message.includes('declares no AWS account')
+        ) {
             return
         }
         this.issues.push(message)

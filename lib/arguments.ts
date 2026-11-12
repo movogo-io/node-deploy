@@ -16,7 +16,11 @@ export const usage = `Usage:
     (where $ENV stands for the stage), is the ARN of the IAM policy set as permissions
     boundary on a role the deploy creates. An existing role is not changed.
 
-  deploy destroy <stage> [--service <name>] [--dry-run]
+    aws.accountId at the top level of the glue file is the AWS account the stage lives in.
+    A deploy under credentials of another account is refused before it changes anything;
+    a glue file without it deploys with a warning.
+
+  deploy destroy <stage> [--glue <file>] [--service <name>] [--dry-run]
 
     Deletes what deploys made on the slot <stage>, which must be one of w1 to w9: rules and
     their targets, functions, APIs, topics and subscriptions, roles and log groups, each only
@@ -25,6 +29,8 @@ export const usage = `Usage:
     The whole list is printed first, with what was skipped and why, and only that list is
     deleted.
 
+    --glue <file>       The stage's glue file (default: ../glue/glue.json). It must declare
+                        aws.accountId, and the credentials must be of that account.
     --service <name>    Only what belongs to that service; topics are kept.
     --dry-run           Stop after printing the list.`
 
@@ -33,6 +39,7 @@ export function parseArguments(args: string[]) {
         args,
         options: {
             'stage-dir': { type: 'string' },
+            glue: { type: 'string' },
             service: { type: 'string' },
             'dry-run': { type: 'boolean' },
         },
@@ -44,6 +51,9 @@ export function parseArguments(args: string[]) {
     }
     if (values.service !== undefined || values['dry-run'] !== undefined) {
         throw new Error(`--service and --dry-run belong to destroy.\n\n${usage}`)
+    }
+    if (values.glue !== undefined) {
+        throw new Error(`--glue belongs to destroy; a deploy names its glue file last.\n\n${usage}`)
     }
     const [pathOrStage, stage, glueFile, ...surplus] = positionals
     if (pathOrStage === undefined) {
@@ -85,7 +95,7 @@ function stageName(stage: string) {
 
 function destroyArguments(
     [stage, ...surplus]: string[],
-    values: { 'stage-dir'?: string; service?: string; 'dry-run'?: boolean },
+    values: { 'stage-dir'?: string; glue?: string; service?: string; 'dry-run'?: boolean },
 ) {
     if (stage === undefined || !isSlot(stage)) {
         throw new Error(
@@ -106,6 +116,7 @@ function destroyArguments(
     return {
         command: 'destroy' as const,
         stage,
+        glueFile: values.glue,
         service: values.service,
         dryRun: values['dry-run'] ?? false,
     }
