@@ -281,7 +281,7 @@ describe('function layers', () => {
                 'PUT /2015-03-31/functions/staging-compose-render/code',
             ],
         )
-    })
+    }).timeout(5000)
 
     it('leaves the code a function had when Lambda refuses its new layer', async () => {
         answer([Response.json({ message: 'Layer version not found.' }, { status: 400 })])
@@ -347,5 +347,152 @@ describe('function layers', () => {
         assert.deepStrictEqual(requests, [
             { request: 'PUT /2015-03-31/functions/staging-compose-render/code', layers: undefined },
         ])
+    })
+})
+
+describe('function fan-out', () => {
+    const realFetch = fetch
+
+    afterEach(() => {
+        globalThis.fetch = realFetch
+    })
+
+    it('updates at most eight functions at a time', async () => {
+        const names = Array.from({ length: 20 }, (_, ix) => `handler-${ix}`)
+        const updated: string[] = []
+        let inFlight = 0
+        let inFlightMax = 0
+        globalThis.fetch = async input => {
+            inFlightMax = Math.max(inFlightMax, ++inFlight)
+            await new Promise(resolve => {
+                setTimeout(resolve, 1)
+            })
+            --inFlight
+            updated.push(new URL(input instanceof Request ? input.url : input).pathname)
+            return Response.json({})
+        }
+
+        await syncLambda(
+            {
+                log: { trace: () => undefined, warn: () => undefined },
+                env: {
+                    AWS_REGION: 'eu-north-1',
+                    AWS_ACCESS_KEY_ID: 'AKIDEXAMPLE',
+                    AWS_SECRET_ACCESS_KEY: 'secret',
+                },
+            },
+            'staging',
+            names.map(name => ({
+                id: `arn:aws:lambda:eu-north-1:123456789012:function:staging-portal-${name}`,
+                name,
+                runtime: 'nodejs24.x',
+                memory: 512,
+                timeout: 15,
+                env: {},
+                cpus: ['arm64'],
+                layers: [],
+                hash: 'the code deployed before',
+                size: '1 KiB',
+            })),
+            {
+                name: 'portal',
+                revision: undefined,
+                http: names.map(name => ({
+                    name,
+                    method: 'POST' as const,
+                    pathPattern: name,
+                    config: { nodeVersion: '>=24' },
+                })),
+                timers: [],
+                events: [],
+                emits: [],
+            },
+            {},
+            'arn:role',
+            Object.fromEntries(
+                names.map(name => [
+                    name,
+                    { fileName: 'index.mjs', code: 'export const handler = () => {}' },
+                ]),
+            ),
+            {},
+        )
+
+        assert.deepStrictEqual(
+            { inFlightMax, updated: updated.toSorted((a, b) => a.localeCompare(b)) },
+            {
+                inFlightMax: 8,
+                updated: names
+                    .map(name => `/2015-03-31/functions/staging-portal-${name}/code`)
+                    .toSorted((a, b) => a.localeCompare(b)),
+            },
+        )
+    })
+
+    it('starts no further update once one has failed', async () => {
+        const names = Array.from({ length: 20 }, (_, ix) => `handler-${ix}`)
+        const updated: string[] = []
+        globalThis.fetch = async input => {
+            await new Promise(resolve => {
+                setTimeout(resolve, 1)
+            })
+            updated.push(new URL(input instanceof Request ? input.url : input).pathname)
+            return updated.length === 1
+                ? Response.json({ message: 'Denied' }, { status: 403 })
+                : Response.json({})
+        }
+
+        await assert.rejects(
+            syncLambda(
+                {
+                    log: { trace: () => undefined, warn: () => undefined },
+                    env: {
+                        AWS_REGION: 'eu-north-1',
+                        AWS_ACCESS_KEY_ID: 'AKIDEXAMPLE',
+                        AWS_SECRET_ACCESS_KEY: 'secret',
+                    },
+                },
+                'staging',
+                names.map(name => ({
+                    id: `arn:aws:lambda:eu-north-1:123456789012:function:staging-portal-${name}`,
+                    name,
+                    runtime: 'nodejs24.x',
+                    memory: 512,
+                    timeout: 15,
+                    env: {},
+                    cpus: ['arm64'],
+                    layers: [],
+                    hash: 'the code deployed before',
+                    size: '1 KiB',
+                })),
+                {
+                    name: 'portal',
+                    revision: undefined,
+                    http: names.map(name => ({
+                        name,
+                        method: 'POST' as const,
+                        pathPattern: name,
+                        config: { nodeVersion: '>=24' },
+                    })),
+                    timers: [],
+                    events: [],
+                    emits: [],
+                },
+                {},
+                'arn:role',
+                Object.fromEntries(
+                    names.map(name => [
+                        name,
+                        { fileName: 'index.mjs', code: 'export const handler = () => {}' },
+                    ]),
+                ),
+                {},
+            ),
+        )
+        await new Promise(resolve => {
+            setTimeout(resolve, 50)
+        })
+
+        assert.deepStrictEqual(updated.length, 8)
     })
 })

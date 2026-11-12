@@ -32,7 +32,9 @@ describe('a command that fails', () => {
         )
     }).timeout(60_000)
 
-    it('exits 1 with the error when a destroy fails', () => {
+    // A destroy and a layer publish import no service code and exited 1 before the fix too: the two
+    // below pin that exit code, and only the deploy above proves the fix.
+    it('keeps exiting 1 with the error when a destroy fails', () => {
         const { status, stdout, stderr } = spawnSync(
             process.execPath,
             [
@@ -50,7 +52,7 @@ describe('a command that fails', () => {
         assert.deepStrictEqual({ status, stdout }, { status: 1, stdout: '' })
     }).timeout(60_000)
 
-    it('exits 1 with the error when a layer publish fails', () => {
+    it('keeps exiting 1 with the error when a layer publish fails', () => {
         const { status, stdout, stderr } = spawnSync(
             process.execPath,
             [

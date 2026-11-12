@@ -114,7 +114,7 @@ async function reservedOf(context: Context, functionName: string) {
                     'lambda',
                     `/2019-09-30/functions/${functionName}/concurrency`,
                 ),
-            r => (r.status === 429 || r.status >= 500 ? 5 : undefined),
+            r => (r.status >= 500 ? 5 : undefined),
         ),
         'Error reading reserved concurrency of lambda ' + functionName,
     )

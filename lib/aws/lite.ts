@@ -110,31 +110,96 @@ async function awsStringRequest(
             headers,
             body: body || undefined,
         })
-        if (response.status === 429 && retries < 5) {
+        if (retries < throttleRetriesMax && (await isThrottled(response))) {
             await response.arrayBuffer()
-            const after = response.headers.get('retry-after')
-            log.trace(`  retrying #${retries + 1}${after ? ` (after ${after})` : ''}...`)
-            await setTimeout(retryDelay(after))
+            const after = response.headers.get('retry-after') ?? undefined
+            log.trace(`  throttled, retrying #${retries + 1}${after ? ` (after ${after})` : ''}...`)
+            await setTimeout(throttleDelayMs(retries, after, Math.random()))
             continue
         }
         return response
     }
 }
 
-function retryDelay(value: string | null, def = 1000, jitter = 1000) {
-    const extra = Math.round(jitter * Math.random())
+const throttleRetriesMax = 8
+
+/**
+Full jitter over an exponential ceiling of 0.5 s doubling to 16 s, so the many requests of one
+deploy that a throttle met spread out instead of returning together. A `Retry-After` is a floor up
+to the same 16 s. One request waits 63.5 s at most, or 128 s if every throttle asks for 16 s, which
+keeps its signature, made once, inside its five minutes.
+*/
+export function throttleDelayMs(retries: number, retryAfter: string | undefined, random: number) {
+    const jittered = Math.round(random * Math.min(16_000, 500 * 2 ** retries))
+    return Math.max(jittered, Math.min(16_000, retryAfterMs(retryAfter)))
+}
+
+function retryAfterMs(value: string | undefined) {
     if (!value) {
-        return def + extra
+        return 0
     }
     const seconds = Number(value)
     if (Number.isFinite(seconds)) {
-        return seconds * 1000 + extra
+        return seconds * 1000
     }
     const time = new Date(value).getTime()
     if (Number.isFinite(time)) {
-        return Math.max(0, time - Date.now()) + extra
+        return Math.max(0, time - Date.now())
     }
-    return def + extra
+    return 0
+}
+
+/**
+Lambda throttles with a 429; IAM, EventBridge and DynamoDB with a 400 told apart from a real
+client error only by the error code in the body, as JSON (`__type`, `Error.Code`) or as XML.
+*/
+export async function isThrottled(response: Response) {
+    if (response.status === 429) {
+        return true
+    }
+    if (response.status !== 400) {
+        return false
+    }
+    return throttlingErrors.has(errorCode(await response.clone().text()) ?? '')
+}
+
+const throttlingErrors = new Set([
+    'Throttling',
+    'ThrottlingException',
+    'TooManyRequestsException',
+    'RequestLimitExceeded',
+    'ProvisionedThroughputExceededException',
+])
+
+function errorCode(body: string) {
+    const xmlCode = /<Code>([^<]*)<\/Code>/u.exec(body)?.[1]
+    if (xmlCode !== undefined) {
+        return xmlCode
+    }
+    try {
+        return jsonErrorCode(JSON.parse(body))
+    } catch {
+        return undefined
+    }
+}
+
+function jsonErrorCode(body: unknown) {
+    if (typeof body !== 'object' || body === null) {
+        return undefined
+    }
+    if ('__type' in body && typeof body.__type === 'string') {
+        return body.__type.split('#').at(-1)
+    }
+    if (
+        'Error' in body &&
+        typeof body.Error === 'object' &&
+        body.Error !== null &&
+        'Code' in body.Error &&
+        typeof body.Error.Code === 'string'
+    ) {
+        return body.Error.Code
+    }
+    return undefined
 }
 
 // eslint-disable-next-line @typescript-eslint/no-unnecessary-type-parameters
@@ -196,7 +261,7 @@ export function isConflict(e: unknown) {
 
 export async function retryConflict<T>(fn: () => Promise<T>): Promise<T> {
     const deadline = new Date()
-    deadline.setUTCSeconds(deadline.getUTCSeconds() + 30)
+    deadline.setUTCSeconds(deadline.getUTCSeconds() + 90)
     for (;;) {
         try {
             return await fn()
@@ -204,7 +269,7 @@ export async function retryConflict<T>(fn: () => Promise<T>): Promise<T> {
             if (!isConflict(e) || new Date() > deadline) {
                 throw e
             }
-            await setTimeout(((Math.random() + 0.5) * 500) / 2)
+            await setTimeout((Math.random() + 0.5) * 1000)
         }
     }
 }

@@ -11,6 +11,28 @@ deploy --help
 
 `<path>` defaults to the current directory and the glue file to `../glue/glue.json` beside it.
 
+## Upgrading from 0.6.0
+
+0.6.1 asks nothing of a 0.6.0 user before its first deploy. What changes:
+
+- On a slot (`w1` to `w9`) a new timer rule is created disabled, and the deploy says so in one
+  line. Enable a slot's timers once the slot is complete; see [Timer rules](#timer-rules). Rules
+  that exist keep their state, and no other stage changes.
+- A slot built with 0.6.0 keeps the timer rules it has enabled, since existing rules keep their
+  state. Disable each by hand with `aws events disable-rule --name <stage>-<service>-<timer>`, or
+  destroy the slot and build it again.
+- A deploy, a `destroy` or a `publish-layer` that fails prints the error to stderr and exits 1,
+  always. Before, a deploy that failed after it had read the service's entrypoints could print
+  nothing and exit 0: the entrypoints are imported into the deploying process, and a service
+  whose imports reach `@movogo-io/host/context`, directly or through a package, registers
+  listeners there that kept Node from reporting the error. `done.` is printed only by a command
+  that completed, so a caller may rely on the exit code alone.
+- A throttled AWS request is retried up to eight times, with exponential backoff and jitter, for
+  at most about a minute: a Lambda 429 as before, and now also the 400 that IAM and EventBridge
+  throttle with (`Throttling`, `ThrottlingException`). A deploy creates, updates and
+  deletes at most eight functions at a time, so a service with many functions no longer meets
+  Lambda's rate limit (`CallerRateLimitExceeded`) all at once.
+
 ## Upgrading from 0.5.0
 
 Check each point before the first deploy with 0.6.0.
@@ -60,18 +82,6 @@ Check each point before the first deploy with 0.6.0.
   line. Add the account id to end the warning.
 - A deploy to a slot (`w1` to `w9`) is refused unless the glue file lists the slot in `aws.slots`.
 
-**0.6.1**
-
-- On a slot (`w1` to `w9`) a new timer rule is created disabled, and the deploy says so in one
-  line. Enable a slot's timers once the slot is complete; see [Timer rules](#timer-rules). Rules
-  that exist keep their state, and no other stage changes.
-- A deploy, a `destroy` or a `publish-layer` that fails prints the error to stderr and exits 1,
-  always. Before, a deploy that failed after it had read the service's entrypoints could print
-  nothing and exit 0: the entrypoints are imported into the deploying process, and a service
-  whose imports reach `@movogo-io/host/context`, directly or through a package, registers
-  listeners there that kept Node from reporting the error. `done.` is printed only by a command
-  that completed, so a caller may rely on the exit code alone.
-
 ## Credentials
 
 In this order: the key pair in the environment; the profile `AWS_PROFILE` names; the profile named
@@ -119,12 +129,12 @@ has other timer rules on that stage and every one of them is disabled; then it i
 A timer removed from the code has its rule and target deleted.
 
 **On a slot** (`w1` to `w9`) a new rule is instead always created disabled, whatever state the
-service's other rules have. A slot is built by many deploys before its tables and data are ready, and a
-timer firing in between would run against a half-built stage. A deploy that creates rules there
-says so in one line (`new timers of … created disabled (…): … is a slot`). Enable them once the
-slot is complete, with `aws events enable-rule --name <stage>-<service>-<timer>`; from then on
-each rule keeps its state like on any other stage, so redeploys leave an enabled timer enabled.
-A removed timer's rule and target are deleted on a slot too.
+service's other rules have. A slot is built by many deploys before its tables and data are ready,
+and a timer firing in between would run against a half-built stage. A deploy that creates rules
+there says so in one line (`new timers of … created disabled (…): … is a slot`). Enable them once
+the slot is complete, with `aws events enable-rule --name <stage>-<service>-<timer>`; from then on
+each rule keeps its state like on any other stage, so redeploys leave an enabled timer enabled. A
+removed timer's rule and target are deleted on a slot too.
 
 ## Policy statements and the permissions boundary
 

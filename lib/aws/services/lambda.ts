@@ -27,41 +27,63 @@ export async function syncLambda(
 
     const functions = [...reflection.http, ...reflection.events, ...reflection.timers]
     const { missing, surplus, existing } = compare(functions, currentFunctions)
-    const created = await Promise.all(
-        missing.map(fn =>
-            createLambda(
-                context,
-                prefix,
-                fn.name,
-                reflection.name,
-                reflection.revision,
-                role,
-                fn,
-                environment,
-                layers[fn.name] ?? [],
-                zipped[fn.name],
-            ),
+    const created = await mapBounded(missing, fn =>
+        createLambda(
+            context,
+            prefix,
+            fn.name,
+            reflection.name,
+            reflection.revision,
+            role,
+            fn,
+            environment,
+            layers[fn.name] ?? [],
+            zipped[fn.name],
         ),
     )
-    await Promise.all(surplus.map(fn => deleteLambda(context, prefix, reflection.name, fn.name)))
-    await Promise.all(
-        existing.map(awsFn =>
-            updateLambda(
-                context,
-                prefix,
-                awsFn.name,
-                reflection.name,
-                role,
-                functions.find(fn => fn.name === awsFn.name),
-                awsFn,
-                environment,
-                layers[awsFn.name] ?? [],
-                zipped[awsFn.name],
-            ),
+    await mapBounded(surplus, fn => deleteLambda(context, prefix, reflection.name, fn.name))
+    await mapBounded(existing, awsFn =>
+        updateLambda(
+            context,
+            prefix,
+            awsFn.name,
+            reflection.name,
+            role,
+            functions.find(fn => fn.name === awsFn.name),
+            awsFn,
+            environment,
+            layers[awsFn.name] ?? [],
+            zipped[awsFn.name],
         ),
     )
 
     return [...currentFunctions.map(fn => ({ id: fn.id, name: fn.name })), ...created]
+}
+
+// The Lambda control plane throttles a caller at a low shared rate: a deploy of 64 functions that
+// updated them all at once failed on it.
+const functionRequestsInFlightMax = 8
+
+async function mapBounded<T, R>(items: T[], fn: (item: T) => Promise<R>) {
+    const results: R[] = []
+    const queue = items.entries()
+    const failure = new AbortController()
+    await Promise.all(
+        Array.from({ length: Math.min(functionRequestsInFlightMax, items.length) }, async () => {
+            for (const [ix, item] of queue) {
+                if (failure.signal.aborted) {
+                    return
+                }
+                try {
+                    results[ix] = await fn(item)
+                } catch (e) {
+                    failure.abort()
+                    throw e
+                }
+            }
+        }),
+    )
+    return results
 }
 
 async function zip(fileName: string, code: string) {
@@ -185,8 +207,8 @@ export async function getFunctions(
     return ours.map(fn => asLite(fn, fnPrefix))
 }
 
-// The Lambda control plane throttles at a low shared rate; a throttled or failed read is retried
-// as createLambda retries its own request.
+// The Lambda control plane throttles at a low shared rate; awsRequest retries a throttled read,
+// and a failed one is retried here.
 export async function getFunctionTags(
     context: Context,
     fn: { FunctionName: string; FunctionArn: string },
@@ -201,7 +223,7 @@ export async function getFunctionTags(
                     'lambda',
                     `/2017-03-31/tags/${encodeURIComponent(fn.FunctionArn)}`,
                 ),
-            r => (r.status === 429 || r.status >= 500 ? 5 : undefined),
+            r => (r.status >= 500 ? 5 : undefined),
         ),
         'Error reading tags of function ' + fn.FunctionName,
     )

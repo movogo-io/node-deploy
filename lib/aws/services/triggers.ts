@@ -168,7 +168,7 @@ export async function getTriggers(
                                                 'lambda',
                                                 `/2015-03-31/functions/${prefix}-${service}-${fn.name}/policy/`,
                                             ),
-                                        r => (r.status === 429 || r.status >= 500 ? 5 : undefined),
+                                        r => (r.status >= 500 ? 5 : undefined),
                                     ),
                                     'Error getting triggers.',
                                 )
