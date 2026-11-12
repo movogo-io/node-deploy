@@ -29,7 +29,8 @@
     "lib/aws/services/*.js"
   ],
   "bin": {
-    "deploy": "bin/index.js"
+    "deploy": "bin/index.js",
+    "publish-layer": "bin/publish-layer.js"
   },
   "dependencies": {
     "@movogo-io/host": "0.4.0",

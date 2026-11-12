@@ -1,9 +1,10 @@
 import { validateEventFilter } from '@movogo-io/host/attributes'
 import { type Reflection, reflect } from '@movogo-io/host/reflect'
 import { Resolver } from './lib/aws/resolve.js'
+import { desiredLayers } from './lib/aws/services/layers.js'
 import { getCurrentState, sync } from './lib/aws/sync.js'
 import { getGlue } from './lib/glue.js'
-import { stage } from './lib/stage.js'
+import { externalModules, stage } from './lib/stage.js'
 
 export async function deploy(
     context: {
@@ -23,13 +24,14 @@ export async function deploy(
     const [{ service, implementations, publishTopics, corsSites, env, ...provider }, reflection] =
         await Promise.all([getGlue(path, envName, resolver, glueFile), reflect(path)])
     validateEventFilters(reflection)
+    const functionNames = [...reflection.http, ...reflection.timers, ...reflection.events].map(
+        fn => fn.name,
+    )
+    const glueAws = 'aws' in provider ? provider.aws : undefined
+    const layers = desiredLayers(functionNames, glueAws)
+    const external = externalModules(functionNames, glueAws)
     const [currentState, code] = await Promise.all([
-        getCurrentState(
-            context,
-            envName,
-            service,
-            [...reflection.http, ...reflection.timers, ...reflection.events].map(fn => fn.name),
-        ),
+        getCurrentState(context, envName, service, functionNames),
         stage(
             context.log,
             stagePath,
@@ -42,6 +44,7 @@ export async function deploy(
                 ...reflection.timers.map(fn => [fn.name, 'timer'] as const),
                 ...reflection.events.map(fn => [fn.name, 'event'] as const),
             ]),
+            external,
         ),
     ])
 
@@ -54,7 +57,8 @@ export async function deploy(
         publishTopics,
         corsSites,
         await env,
-        Object.fromEntries(code.map(c => [c.fn, c.code])),
+        Object.fromEntries(code.map(({ fn, ...c }) => [fn, c])),
+        layers,
         provider,
     )
 }

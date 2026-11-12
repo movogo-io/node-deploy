@@ -5,6 +5,7 @@ import { logQueryLink } from './services/cloud-watch.js'
 import { syncTimeToLive } from './services/dynamodb.js'
 import { syncEventBridge } from './services/event-bridge.js'
 import { type Concurrency, desiredConcurrency, syncConcurrency } from './services/concurrency.js'
+import type { Layers } from './services/layers.js'
 import { getFunctions, syncLambda } from './services/lambda.js'
 import { assignPolicy, getRole, syncRole } from './services/roles.js'
 import { syncTopics, unsubscribeSurplus } from './services/sns.js'
@@ -45,7 +46,8 @@ export async function sync(
     publishTopics: string[],
     corsSites: string[],
     environment: { [key: string]: string },
-    code: { [name: string]: string },
+    code: { [name: string]: { fileName: string; code: string } },
+    layers: Layers,
     provider: {
         aws?: {
             policyStatements?: { Effect: string; Resource: string; Action: string[] }[]
@@ -70,6 +72,7 @@ export async function sync(
         environment,
         role,
         code,
+        layers,
     )
     await syncConcurrency(context, prefix, service, functionNames, concurrency)
     const [_arn, _aws, _lambda, region, account, _function, _name] = fns[0]?.id.split(':') ?? []
