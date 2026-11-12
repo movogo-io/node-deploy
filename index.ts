@@ -1,6 +1,7 @@
 import { validateEventFilter } from '@movogo-io/host/attributes'
 import { type Reflection, reflect } from '@movogo-io/host/reflect'
 import { Resolver } from './lib/aws/resolve.js'
+import { callerArn } from './lib/aws/services/sts.js'
 import { getCurrentState, sync } from './lib/aws/sync.js'
 import { getGlue } from './lib/glue.js'
 import { stage } from './lib/stage.js'
@@ -19,6 +20,7 @@ export async function deploy(
     glueFile?: string,
     stagePath?: string,
 ) {
+    context.log.trace(`deploying to ${envName} as ${await callerArn(context)}`)
     const resolver = new Resolver(context)
     const [{ service, implementations, publishTopics, corsSites, env, ...provider }, reflection] =
         await Promise.all([getGlue(path, envName, resolver, glueFile), reflect(path)])

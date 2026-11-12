@@ -8,7 +8,11 @@ import { awsFormRequest, localAwsEnv } from '../lib/aws/lite.js'
 import { install } from '../lib/npm.js'
 import { compile } from './lib/compile.js'
 
-describe('deploy', () => {
+// These deploy to a real account. They used to reach one through the [default] profile on any
+// build; now they run only when asked to, under a profile named deploy-test or AWS_PROFILE.
+const live = process.env.DEPLOY_TEST_LIVE === '1' ? describe : describe.skip
+
+live('deploy', () => {
     it('should deploy greeting', async () => {
         const log = new Log()
         await Promise.all([deployTestCase(log, 'greeting'), deployTestCase(log, 'subber')])
