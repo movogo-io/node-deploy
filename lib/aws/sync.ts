@@ -6,7 +6,13 @@ import { syncTimeToLive } from './services/dynamodb.js'
 import { syncEventBridge } from './services/event-bridge.js'
 import { type Concurrency, desiredConcurrency, syncConcurrency } from './services/concurrency.js'
 import { type AwsFunction, getFunctions, syncLambda } from './services/lambda.js'
-import { assignPolicy, checkPolicyStatements, getRole, syncRole } from './services/roles.js'
+import {
+    assignPolicy,
+    checkPolicyStatements,
+    getRole,
+    permissionsBoundary,
+    syncRole,
+} from './services/roles.js'
 import { syncTopics, unsubscribeSurplus } from './services/sns.js'
 import { getTriggers, syncTriggers } from './services/triggers.js'
 
@@ -58,6 +64,7 @@ export async function sync(
         aws?: {
             policyStatements?: unknown
             concurrency?: Concurrency
+            permissionsBoundary?: unknown
         }
     },
 ) {
@@ -67,7 +74,9 @@ export async function sync(
     const concurrency = desiredConcurrency(reflection, provider.aws?.concurrency ?? {})
     const policyStatements = checkPolicyStatements(provider.aws?.policyStatements ?? [])
 
-    const role = await syncRole(context, prefix, service, currentState.role)
+    const boundary = permissionsBoundary(provider.aws?.permissionsBoundary, context.env, prefix)
+
+    const role = await syncRole(context, prefix, service, currentState.role, boundary)
 
     await unsubscribeSurplus(context, prefix, currentState.triggers, reflection)
 

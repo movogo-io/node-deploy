@@ -9,7 +9,11 @@ export const usage = `Usage:
 
     --stage-dir <dir>   Build in <dir>/<service> instead of
                         $TMPDIR/riddance/stage/<stage>/<service>. Two deploys of one
-                        service at the same time must not share a <dir>.`
+                        service at the same time must not share a <dir>.
+
+    DEPLOY_PERMISSIONS_BOUNDARY, or services.<service>.aws.permissionsBoundary in the glue
+    (where $ENV stands for the stage), is the ARN of the IAM policy set as permissions
+    boundary on a role the deploy creates. An existing role is not changed.`
 
 export function parseArguments(args: string[]) {
     const { positionals, values } = parseArgs({

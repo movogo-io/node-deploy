@@ -9,7 +9,7 @@ export type AwsRole = {
     Description: string
     MaxSessionDuration: number
     Path: string
-    PermissionsBoundary: null
+    PermissionsBoundary: { PermissionsBoundaryArn: string } | null
     RoleId: string
     RoleLastUsed: { LastUsedDate: number; Region: string }
     RoleName: string
@@ -47,13 +47,91 @@ export async function syncRole(
     prefix: string,
     service: string,
     role: AwsRole | undefined,
+    boundary: string | undefined,
 ) {
-    role ??= await createRole(context, prefix, service)
+    if (!role) {
+        return (await createRole(context, prefix, service, boundary)).Arn
+    }
+    const current = role.PermissionsBoundary?.PermissionsBoundaryArn
+    if (boundary && current !== boundary) {
+        context.log.warn(
+            `role ${role.RoleName} has ${current ? `permissions boundary ${current}` : 'no permissions boundary'}, not ${boundary}: a boundary is only set when the deploy creates the role`,
+        )
+    }
     return role.Arn
 }
 
-async function createRole(context: Context, prefix: string, service: string) {
-    context.log.trace('creating role')
+/**
+The permissions boundary a role created by this deploy gets: DEPLOY_PERMISSIONS_BOUNDARY, else
+`aws.permissionsBoundary` of the service in the glue, where `$ENV` stands for the stage. The
+environment is where a fenced session's boundary comes from, so a glue that names another one is
+refused, not overruled in either direction.
+*/
+export function permissionsBoundary(
+    glue: unknown,
+    env: { [key: string]: string | undefined },
+    prefix: string,
+) {
+    // eslint-disable-next-line @typescript-eslint/prefer-nullish-coalescing -- an empty variable is unset
+    const fromEnv = env.DEPLOY_PERMISSIONS_BOUNDARY || undefined
+    if (fromEnv !== undefined && !policyArnPattern.test(fromEnv)) {
+        throw new Error(
+            `DEPLOY_PERMISSIONS_BOUNDARY must be the ARN of an IAM policy, not ${JSON.stringify(fromEnv)}.`,
+        )
+    }
+    if (glue === undefined) {
+        return fromEnv
+    }
+    const fromGlue = typeof glue === 'string' ? glue.replaceAll('$ENV', () => prefix) : glue
+    if (typeof fromGlue !== 'string' || !policyArnPattern.test(fromGlue)) {
+        throw new Error(
+            `aws.permissionsBoundary must be the ARN of an IAM policy, not ${JSON.stringify(glue)}.`,
+        )
+    }
+    if (fromEnv !== undefined && fromEnv !== fromGlue) {
+        throw new Error(
+            `DEPLOY_PERMISSIONS_BOUNDARY is ${fromEnv} while the glue's aws.permissionsBoundary is ${fromGlue}; they must agree.`,
+        )
+    }
+    return fromGlue
+}
+
+const policyArnPattern = /^arn:aws[a-z-]*:iam::(?:\d{12}|aws):policy\/[\w+=,.@/-]+$/u
+
+export function createRoleParameters(prefix: string, service: string, boundary?: string) {
+    return {
+        Action: 'CreateRole',
+        Version: '2010-05-08',
+        RoleName: `${prefix}-${service}-role`,
+        AssumeRolePolicyDocument: JSON.stringify({
+            Version: '2012-10-17',
+            Statement: [
+                {
+                    Effect: 'Allow',
+                    Principal: {
+                        Service: 'lambda.amazonaws.com',
+                    },
+                    Action: 'sts:AssumeRole',
+                },
+            ],
+        }),
+        ...(boundary && { PermissionsBoundary: boundary }),
+        'Tags.member.1.Key': 'framework',
+        'Tags.member.1.Value': 'riddance',
+        'Tags.member.2.Key': 'environment',
+        'Tags.member.2.Value': prefix,
+        'Tags.member.3.Key': 'service',
+        'Tags.member.3.Value': service,
+    }
+}
+
+async function createRole(
+    context: Context,
+    prefix: string,
+    service: string,
+    boundary: string | undefined,
+) {
+    context.log.trace(`creating role${boundary ? ` with permissions boundary ${boundary}` : ''}`)
     const response = await jsonResponse<{
         CreateRoleResponse: {
             CreateRoleResult: {
@@ -65,29 +143,7 @@ async function createRole(context: Context, prefix: string, service: string) {
             context,
             'GET',
             'iam',
-            `?${new URLSearchParams({
-                Action: 'CreateRole',
-                Version: '2010-05-08',
-                RoleName: `${prefix}-${service}-role`,
-                AssumeRolePolicyDocument: JSON.stringify({
-                    Version: '2012-10-17',
-                    Statement: [
-                        {
-                            Effect: 'Allow',
-                            Principal: {
-                                Service: 'lambda.amazonaws.com',
-                            },
-                            Action: 'sts:AssumeRole',
-                        },
-                    ],
-                }),
-                'Tags.member.1.Key': 'framework',
-                'Tags.member.1.Value': 'riddance',
-                'Tags.member.2.Key': 'environment',
-                'Tags.member.2.Value': prefix,
-                'Tags.member.3.Key': 'service',
-                'Tags.member.3.Value': service,
-            }).toString()}`,
+            `?${new URLSearchParams(createRoleParameters(prefix, service, boundary)).toString()}`,
         ),
         'Error creating role',
     )

@@ -1,5 +1,10 @@
 import assert from 'node:assert/strict'
-import { checkPolicyStatements, renderStatement } from '../lib/aws/services/roles.js'
+import {
+    checkPolicyStatements,
+    createRoleParameters,
+    permissionsBoundary,
+    renderStatement,
+} from '../lib/aws/services/roles.js'
 
 describe('policy statements', () => {
     it('refuses a statement without Allow or Deny', () => {
@@ -320,6 +325,99 @@ describe('policy statements', () => {
                     },
                 },
             ],
+        )
+    })
+})
+
+describe('permissions boundary', () => {
+    const boundary = 'arn:aws:iam::123456789012:policy/slot-boundary-w1'
+
+    it('refuses a boundary that is no IAM policy ARN', () => {
+        assert.throws(
+            () => permissionsBoundary(undefined, { DEPLOY_PERMISSIONS_BOUNDARY: 'slot-w1' }, 'w1'),
+            {
+                message:
+                    'DEPLOY_PERMISSIONS_BOUNDARY must be the ARN of an IAM policy, not "slot-w1".',
+            },
+        )
+        assert.throws(
+            () => permissionsBoundary('arn:aws:iam::123456789012:role/slot-runner-w1', {}, 'w1'),
+            {
+                message:
+                    'aws.permissionsBoundary must be the ARN of an IAM policy, not "arn:aws:iam::123456789012:role/slot-runner-w1".',
+            },
+        )
+        assert.throws(() => permissionsBoundary({ arn: boundary }, {}, 'w1'), {
+            message: `aws.permissionsBoundary must be the ARN of an IAM policy, not {"arn":"${boundary}"}.`,
+        })
+    })
+
+    it('refuses a glue that names another boundary than the environment', () => {
+        assert.throws(
+            () =>
+                permissionsBoundary(
+                    'arn:aws:iam::123456789012:policy/wide-open',
+                    { DEPLOY_PERMISSIONS_BOUNDARY: boundary },
+                    'w1',
+                ),
+            {
+                message: `DEPLOY_PERMISSIONS_BOUNDARY is ${boundary} while the glue's aws.permissionsBoundary is arn:aws:iam::123456789012:policy/wide-open; they must agree.`,
+            },
+        )
+    })
+
+    it('is none unless the environment or the glue names one', () => {
+        assert.deepStrictEqual(
+            [
+                permissionsBoundary(undefined, {}, 'dev'),
+                permissionsBoundary(undefined, { DEPLOY_PERMISSIONS_BOUNDARY: '' }, 'dev'),
+            ],
+            [undefined, undefined],
+        )
+        assert.strictEqual(
+            new URLSearchParams(createRoleParameters('dev', 'crew')).has('PermissionsBoundary'),
+            false,
+        )
+    })
+
+    it('comes from the environment, or from the glue with the stage filled in', () => {
+        assert.deepStrictEqual(
+            [
+                permissionsBoundary(undefined, { DEPLOY_PERMISSIONS_BOUNDARY: boundary }, 'w1'),
+                permissionsBoundary(
+                    'arn:aws:iam::123456789012:policy/slot-boundary-$ENV',
+                    {},
+                    'w1',
+                ),
+                permissionsBoundary(
+                    'arn:aws:iam::123456789012:policy/slot-boundary-$ENV',
+                    { DEPLOY_PERMISSIONS_BOUNDARY: boundary },
+                    'w1',
+                ),
+            ],
+            [boundary, boundary, boundary],
+        )
+    })
+
+    it('is carried by CreateRole', () => {
+        assert.deepStrictEqual(
+            Object.fromEntries(
+                Object.entries(createRoleParameters('w1', 'crew', boundary)).filter(
+                    ([key]) => key !== 'AssumeRolePolicyDocument',
+                ),
+            ),
+            {
+                Action: 'CreateRole',
+                Version: '2010-05-08',
+                RoleName: 'w1-crew-role',
+                PermissionsBoundary: boundary,
+                'Tags.member.1.Key': 'framework',
+                'Tags.member.1.Value': 'riddance',
+                'Tags.member.2.Key': 'environment',
+                'Tags.member.2.Value': 'w1',
+                'Tags.member.3.Key': 'service',
+                'Tags.member.3.Value': 'crew',
+            },
         )
     })
 })

@@ -9,7 +9,10 @@ const { path = process.cwd(), stage: envName, glueFile, stageDir } = parsed()
 try {
     const { logLink, host } = await deploy(
         {
-            env: await localAwsEnv(undefined, envName),
+            env: {
+                ...(await localAwsEnv(undefined, envName)),
+                DEPLOY_PERMISSIONS_BOUNDARY: process.env.DEPLOY_PERMISSIONS_BOUNDARY,
+            },
             log: {
                 trace: (message: string) => {
                     console.log(message)
