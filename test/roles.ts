@@ -118,19 +118,59 @@ describe('policy statements', () => {
         )
     })
 
-    it('renders a legacy statement exactly as 0.4.1 did, dropping its Principal', () => {
-        assert.strictEqual(
-            JSON.stringify(
+    it('refuses a key it would not render, naming the statement', () => {
+        assert.throws(
+            () =>
                 checkPolicyStatements([
+                    { Effect: 'Allow', Resource: '*', Action: ['ses:SendEmail'] },
                     {
                         Effect: 'Allow',
                         Principal: { AWS: '*' },
+                        Sid: 'publish',
                         Action: 'SNS:Publish',
                         Resource: 'arn:aws:sns:$REGION:$ACCOUNT:*',
                     },
-                ]).map(statement => renderStatement(statement, 'eu-north-1', '123456789012')),
-            ),
-            '[{"Effect":"Allow","Resource":"arn:aws:sns:eu-north-1:123456789012:*","Action":"SNS:Publish"}]',
+                ]),
+            {
+                message:
+                    'aws.policyStatements[1] carries Principal, Sid, which a role policy cannot hold: only Effect, Resource, Action and Condition are rendered.',
+            },
+        )
+    })
+
+    it('refuses a variable it does not know, in a Resource, an Action or a Condition', () => {
+        assert.throws(
+            () =>
+                checkPolicyStatements([
+                    {
+                        Effect: 'Allow',
+                        Action: 'SNS:Publish',
+                        Resource: ['arn:aws:sns:$REGION:$ACCOUNT:$ENV-*', 'arn:aws:sns:$STAGE-*'],
+                    },
+                ]),
+            {
+                message:
+                    'aws.policyStatements[0] still contains "$" once $REGION, $ACCOUNT and $ENV are substituted: {"Effect":"Allow","Action":"SNS:Publish","Resource":["arn:aws:sns:$REGION:$ACCOUNT:$ENV-*","arn:aws:sns:$STAGE-*"]}.',
+            },
+        )
+        assert.throws(
+            () =>
+                checkPolicyStatements([
+                    { Effect: 'Allow', Action: 'sns:$ENV', Resource: 'arn:aws:sns:*' },
+                ]),
+            { message: /^aws\.policyStatements\[0\] still contains "\$"/u },
+        )
+        assert.throws(
+            () =>
+                checkPolicyStatements([
+                    {
+                        Effect: 'Allow',
+                        Action: 'ses:SendEmail',
+                        Resource: '*',
+                        Condition: { StringLike: { 'ses:Recipients': '*@$DOMAIN' } },
+                    },
+                ]),
+            { message: /^aws\.policyStatements\[0\] still contains "\$"/u },
         )
     })
 
@@ -145,6 +185,7 @@ describe('policy statements', () => {
                     },
                     'eu-north-1',
                     '123456789012',
+                    'dev',
                 ),
             ),
             '{"Effect":"Allow","Resource":"arn:aws:ses:eu-north-1:123456789012:identity/dev.movogo.io","Action":["ses:SendEmail"]}',
@@ -165,6 +206,7 @@ describe('policy statements', () => {
                     },
                     'eu-north-1',
                     '123456789012',
+                    'dev',
                 ),
             ),
             '{"Effect":"Deny","Resource":["arn:aws:ses:eu-north-1:123456789012:identity/dev.movogo.io","arn:aws:ses:eu-north-1:123456789012:configuration-set/dev-mails"],"Action":"ses:SendEmail"}',
@@ -226,6 +268,7 @@ describe('policy statements', () => {
                 },
                 'eu-north-1',
                 '123456789012',
+                'dev',
             ),
             {
                 Effect: 'Allow',
@@ -246,6 +289,37 @@ describe('policy statements', () => {
                     Bool: { 'aws:SecureTransport': true },
                 },
             },
+        )
+    })
+
+    it('substitutes the stage in Resource and Condition values, so one glue serves every stage', () => {
+        assert.deepStrictEqual(
+            checkPolicyStatements([
+                {
+                    Effect: 'Allow',
+                    Action: ['SNS:Publish'],
+                    Resource: ['arn:aws:sns:$REGION:$ACCOUNT:$ENV-tender-*', '$ENV.$ENV'],
+                    Condition: {
+                        ArnLike: {
+                            'aws:SourceArn': 'arn:aws:sns:$REGION:$ACCOUNT:$ENV-*',
+                            'aws:PrincipalArn': ['arn:aws:iam::$ACCOUNT:role/$ENV-*'],
+                        },
+                    },
+                },
+            ]).map(statement => renderStatement(statement, 'eu-north-1', '123456789012', 'w1')),
+            [
+                {
+                    Effect: 'Allow',
+                    Action: ['SNS:Publish'],
+                    Resource: ['arn:aws:sns:eu-north-1:123456789012:w1-tender-*', 'w1.w1'],
+                    Condition: {
+                        ArnLike: {
+                            'aws:SourceArn': 'arn:aws:sns:eu-north-1:123456789012:w1-*',
+                            'aws:PrincipalArn': ['arn:aws:iam::123456789012:role/w1-*'],
+                        },
+                    },
+                },
+            ],
         )
     })
 })

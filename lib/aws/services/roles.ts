@@ -164,7 +164,9 @@ export async function assignPolicy(
                             Action: ['sns:Publish'],
                             Resource: `arn:aws:sns:${region}:${account}:${prefix}-${topic}-*`,
                         })),
-                        ...additionalStatements.map(as => renderStatement(as, region, account)),
+                        ...additionalStatements.map(as =>
+                            renderStatement(as, region, account, prefix),
+                        ),
                     ],
                 }),
             }).toString()}`,
@@ -199,6 +201,12 @@ function checkStatement(statement: unknown, at: string): PolicyStatement {
     if (!isObject(statement)) {
         throw new Error(`${at} must be an object, not ${JSON.stringify(statement)}.`)
     }
+    const unrendered = Object.keys(statement).filter(key => !renderedKeys.has(key))
+    if (unrendered.length !== 0) {
+        throw new Error(
+            `${at} carries ${unrendered.join(', ')}, which a role policy cannot hold: only Effect, Resource, Action and Condition are rendered.`,
+        )
+    }
     const { Effect, Resource, Action, Condition } = statement
     if (Effect !== 'Allow' && Effect !== 'Deny') {
         throw new Error(`${at}.Effect must be "Allow" or "Deny", not ${JSON.stringify(Effect)}.`)
@@ -213,11 +221,19 @@ function checkStatement(statement: unknown, at: string): PolicyStatement {
             `${at}.Action must be a string or a non-empty array of strings, not ${JSON.stringify(Action)}.`,
         )
     }
-    if (Condition === undefined) {
-        return { Effect, Resource, Action }
+    const checked: PolicyStatement =
+        Condition === undefined
+            ? { Effect, Resource, Action }
+            : { Effect, Resource, Action, Condition: checkCondition(Condition, `${at}.Condition`) }
+    if (JSON.stringify(renderStatement(checked, '', '', '')).includes('$')) {
+        throw new Error(
+            `${at} still contains "$" once $REGION, $ACCOUNT and $ENV are substituted: ${JSON.stringify(statement)}.`,
+        )
     }
-    return { Effect, Resource, Action, Condition: checkCondition(Condition, `${at}.Condition`) }
+    return checked
 }
+
+const renderedKeys = new Set(['Effect', 'Resource', 'Action', 'Condition'])
 
 function checkCondition(condition: unknown, at: string): PolicyCondition {
     if (!isObject(condition) || Object.keys(condition).length === 0) {
@@ -251,9 +267,13 @@ export function renderStatement(
     { Effect, Resource, Action, Condition }: PolicyStatement,
     region: string,
     account: string,
+    environment: string,
 ) {
     const substitute = (value: string) =>
-        value.replaceAll('$REGION', () => region).replaceAll('$ACCOUNT', () => account)
+        value
+            .replaceAll('$REGION', () => region)
+            .replaceAll('$ACCOUNT', () => account)
+            .replaceAll('$ENV', () => environment)
     const substituteValue = (value: string | number | boolean) =>
         typeof value === 'string' ? substitute(value) : value
     return {
