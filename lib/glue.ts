@@ -45,6 +45,43 @@ export async function getGlue(path: string, prefix: string, resolver: Resolver, 
     }
 }
 
+/**
+A setting of the glue's `aws` object that names a list per function (`layers`, `external`), keyed
+by function name. `items` says what the lists hold, for the refusals.
+*/
+export function functionLists(
+    functionNames: string[],
+    glueAws: unknown,
+    setting: string,
+    items: string,
+): { [functionName: string]: string[] } {
+    const named =
+        glueAws !== null && typeof glueAws === 'object'
+            ? Object.entries(glueAws).find(([key]) => key === setting)
+            : undefined
+    const glue: unknown = named ? named[1] : {}
+    if (glue === null || typeof glue !== 'object' || Array.isArray(glue)) {
+        throw new Error(`aws.${setting} must map function names to lists of ${items}.`)
+    }
+    const unknown = Object.keys(glue).filter(name => !functionNames.includes(name))
+    if (unknown.length !== 0) {
+        throw new Error(
+            `aws.${setting} names ${unknown.join(', ')}, which the service has no function of.`,
+        )
+    }
+    return Object.fromEntries(
+        Object.entries(glue).map(([name, list]: [string, unknown]) => {
+            const strings = Array.isArray(list)
+                ? list.filter((item): item is string => typeof item === 'string')
+                : []
+            if (!Array.isArray(list) || strings.length !== list.length) {
+                throw new Error(`aws.${setting} of ${name} must be a list of ${items}.`)
+            }
+            return [name, strings] as const
+        }),
+    )
+}
+
 type Implementations = {
     [interfacePackage: string]: {
         implementation: string

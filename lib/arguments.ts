@@ -20,7 +20,8 @@ export const usage = `Usage:
 
     Deletes what deploys made on the slot <stage>, which must be one of w1 to w9: rules and
     their targets, functions, APIs, topics and subscriptions, roles and log groups, each only
-    when its name starts with the stage and its environment tag names it. Tables are kept.
+    when its name starts with the stage and its environment tag names it. Tables are kept,
+    and so are the layer versions its functions ran with, which other stages may share.
     The whole list is printed first, with what was skipped and why, and only that list is
     deleted.
 

@@ -5,6 +5,7 @@ import { createHash } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
 import { compare } from '../diff.js'
 import { type Context, awsRequest, retry, retryConflict } from '../lite.js'
+import type { Layers } from './layers.js'
 
 export async function syncLambda(
     context: Context,
@@ -13,11 +14,14 @@ export async function syncLambda(
     reflection: Reflection,
     environment: { [key: string]: string },
     role: string,
-    code: { [name: string]: string },
+    code: { [name: string]: { fileName: string; code: string } },
+    layers: Layers,
 ) {
     const zipped = Object.fromEntries(
         await Promise.all(
-            Object.entries(code).map(async ([name, c]) => [name, await zip(c)] as const),
+            Object.entries(code).map(
+                async ([name, c]) => [name, await zip(c.fileName, c.code)] as const,
+            ),
         ),
     )
 
@@ -34,6 +38,7 @@ export async function syncLambda(
                 role,
                 fn,
                 environment,
+                layers[fn.name] ?? [],
                 zipped[fn.name],
             ),
         ),
@@ -50,6 +55,7 @@ export async function syncLambda(
                 functions.find(fn => fn.name === awsFn.name),
                 awsFn,
                 environment,
+                layers[awsFn.name] ?? [],
                 zipped[awsFn.name],
             ),
         ),
@@ -58,9 +64,9 @@ export async function syncLambda(
     return [...currentFunctions.map(fn => ({ id: fn.id, name: fn.name })), ...created]
 }
 
-async function zip(code: string) {
+async function zip(fileName: string, code: string) {
     const buffer = await new JSZip()
-        .file('index.js', code, {
+        .file(fileName, code, {
             compression: 'DEFLATE',
             compressionOptions: { level: 9 },
             date: new Date(2022, 8, 1),
@@ -85,6 +91,7 @@ export type AwsFunctionLite = {
     timeout: number
     env: { [key: string]: string }
     cpus: Architectures
+    layers: string[]
     hash: string
     size: string
 }
@@ -121,6 +128,7 @@ export type AwsFunction = {
     StateReasonCode: null
     LastUpdateStatusReasonCode: null
     Architectures: Architectures
+    Layers?: { Arn: string; CodeSize: number }[]
 }
 
 /**
@@ -272,6 +280,7 @@ function asLite(fn: AwsFunction, fnPrefix: string): AwsFunctionLite {
         timeout: fn.Timeout,
         env: fn.Environment?.Variables ?? {},
         cpus: fn.Architectures,
+        layers: fn.Layers?.map(layer => layer.Arn) ?? [],
         hash: fn.CodeSha256,
         size:
             fn.CodeSize < 1024
@@ -298,6 +307,7 @@ async function createLambda(
     role: string,
     target: Target,
     environment: { [key: string]: string },
+    layers: string[],
     code?: { zipped: string; sha256: string; size: string },
 ) {
     if (!code) {
@@ -313,7 +323,7 @@ async function createLambda(
                     Code: { ZipFile: code.zipped },
                     PackageType: 'Zip',
                     Architectures: lambdaArchitecture(target),
-                    ...lambdaConfig(target, role, environment),
+                    ...lambdaConfig(target, role, environment, layers),
                     Tags: {
                         framework: 'riddance',
                         environment: prefix,
@@ -337,6 +347,7 @@ async function updateLambda(
     target: Target | undefined,
     awsFn: AwsFunctionLite,
     environment: { [key: string]: string },
+    layers: string[],
     code?: { zipped: string; sha256: string; size: string },
 ) {
     if (!code) {
@@ -345,54 +356,87 @@ async function updateLambda(
     if (!target) {
         throw new Error('No config')
     }
-    const cpus = lambdaArchitecture(target)
-    const awsConfig = lambdaConfig(target, role, environment)
-    if (!isDeepStrictEqual({ cpus, hash: code.sha256 }, { cpus: awsFn.cpus, hash: awsFn.hash })) {
-        context.log.trace(`updating code for lambda ${name} (${awsFn.size} -> ${code.size})`)
-        await okResponse(
-            awsRequest(
-                context,
-                'PUT',
-                'lambda',
-                `/2015-03-31/functions/${prefix}-${service}-${name}/code`,
-                {
-                    ZipFile: code.zipped,
-                    Architectures: cpus,
-                },
-            ),
-            'Error updating code for lambda ' + name,
-        )
+    const functionName = `${prefix}-${service}-${name}`
+    // A layer new to the function is attached before the code that imports from it, so a layer
+    // Lambda refuses leaves the function running the code it had.
+    if (layers.some(arn => !awsFn.layers.includes(arn))) {
+        await updateConfig(context, name, functionName, role, target, awsFn, environment, layers)
+        await updateCode(context, name, functionName, target, awsFn, code)
+        return
     }
+    await updateCode(context, name, functionName, target, awsFn, code)
+    await updateConfig(context, name, functionName, role, target, awsFn, environment, layers)
+}
+
+async function updateCode(
+    context: Context,
+    name: string,
+    functionName: string,
+    target: Target,
+    awsFn: AwsFunctionLite,
+    code: { zipped: string; sha256: string; size: string },
+) {
+    const cpus = lambdaArchitecture(target)
+    if (isDeepStrictEqual({ cpus, hash: code.sha256 }, { cpus: awsFn.cpus, hash: awsFn.hash })) {
+        return
+    }
+    context.log.trace(`updating code for lambda ${name} (${awsFn.size} -> ${code.size})`)
+    // Lambda answers 409 while a configuration update just made is still being applied.
+    await retryConflict(() =>
+        okResponse(
+            awsRequest(context, 'PUT', 'lambda', `/2015-03-31/functions/${functionName}/code`, {
+                ZipFile: code.zipped,
+                Architectures: cpus,
+            }),
+            'Error updating code for lambda ' + name,
+        ),
+    )
+}
+
+async function updateConfig(
+    context: Context,
+    name: string,
+    functionName: string,
+    role: string,
+    target: Target,
+    awsFn: AwsFunctionLite,
+    environment: { [key: string]: string },
+    layers: string[],
+) {
+    const awsConfig = lambdaConfig(target, role, environment, layers)
     if (
-        !isDeepStrictEqual(
+        isDeepStrictEqual(
             {
                 env: awsConfig.Environment.Variables,
                 memory: awsConfig.MemorySize,
                 timeout: awsConfig.Timeout,
                 runtime: awsConfig.Runtime,
+                layers: awsConfig.Layers,
             },
             {
                 env: awsFn.env,
                 memory: awsFn.memory,
                 timeout: awsFn.timeout,
                 runtime: awsFn.runtime,
+                layers: awsFn.layers,
             },
         )
     ) {
-        context.log.trace('updating config for lambda ' + name)
-        await retryConflict(() =>
-            okResponse(
-                awsRequest(
-                    context,
-                    'PUT',
-                    'lambda',
-                    `/2015-03-31/functions/${prefix}-${service}-${name}/configuration`,
-                    awsConfig,
-                ),
-                'Error updating config for lambda ' + name,
-            ),
-        )
+        return
     }
+    context.log.trace('updating config for lambda ' + name)
+    await retryConflict(() =>
+        okResponse(
+            awsRequest(
+                context,
+                'PUT',
+                'lambda',
+                `/2015-03-31/functions/${functionName}/configuration`,
+                awsConfig,
+            ),
+            'Error updating config for lambda ' + name,
+        ),
+    )
 }
 
 async function deleteLambda(context: Context, prefix: string, service: string, name: string) {
@@ -407,7 +451,12 @@ export async function deleteFunction(context: Context, fullName: string) {
     )
 }
 
-function lambdaConfig(target: Target, role: string, environment: { [key: string]: string }) {
+function lambdaConfig(
+    target: Target,
+    role: string,
+    environment: { [key: string]: string },
+    layers: string[],
+) {
     return {
         Role: role,
         Runtime: getRuntime(target),
@@ -420,6 +469,8 @@ function lambdaConfig(target: Target, role: string, environment: { [key: string]
         Environment: {
             Variables: environment,
         },
+        // An empty list removes the layers a function had.
+        Layers: layers,
     }
 }
 

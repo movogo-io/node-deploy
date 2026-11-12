@@ -4,13 +4,14 @@ import { nodeResolve } from '@rollup/plugin-node-resolve'
 import virtual from '@rollup/plugin-virtual'
 import { rollup, RollupCache, SourceMap, type Plugin } from '@rollup/wasm-node'
 import { createHash } from 'node:crypto'
-import { mkdir, readdir, readFile, stat, writeFile } from 'node:fs/promises'
+import { mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { homedir, tmpdir } from 'node:os'
 import { dirname, isAbsolute, join, relative, resolve as resolvePath } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
 import zlib from 'node:zlib'
 // eslint-disable-next-line camelcase
 import { minify_sync } from 'terser'
+import { functionLists } from './glue.js'
 import { install } from './npm.js'
 
 type Implementation = {
@@ -111,6 +112,7 @@ export async function stage(
     implementations: { [fromPackage: string]: Implementation },
     service: string,
     types: { [name: string]: 'http' | 'timer' | 'event' },
+    external: External,
 ) {
     log.trace(`stage dir: ${stagePath}`)
     // The Lambda entry imports the host from whatever the glue substitutes for the service
@@ -135,6 +137,12 @@ export async function stage(
     await install(stagePath)
     const lockFile = await readFile(join(stagePath, 'package-lock.json'))
     hashes['package-lock.json'] = createHash('sha256').update(lockFile).digest('base64')
+    for (const [fn, modules] of Object.entries(external)) {
+        if (modules.length !== 0) {
+            // A function staged with other externals is bundled again.
+            hashes[fn + '.js'] = `${hashes[fn + '.js'] ?? ''} external ${modules.join(' ')}`
+        }
+    }
     assertSingleHost(
         JSON.parse(lockFile.toString('utf-8')),
         implementations,
@@ -171,6 +179,9 @@ export async function stage(
         delete hashes[file]
     }
     const nonFunctionFilesUnchanged = isDeepStrictEqual(previous, hashes)
+    // Bundles are written one by one; a run failing half way must not leave hashes that vouch
+    // for them, or a later run zips an ES module bundle as CommonJS.
+    await rm(join(stagePath, '.hashes.json'), { force: true })
     if (nonFunctionFilesUnchanged) {
         const code = [
             ...(await rollupAndMinify(
@@ -184,10 +195,12 @@ export async function stage(
                 config,
                 changed,
                 types,
+                external,
             )),
             ...(await Promise.all(
                 unchanged.map(async fn => ({
                     fn,
+                    fileName: handlerFileName(external[fn] ?? []),
                     code: await readFile(join(stagePath, fn + '.min.js'), 'utf-8'),
                 })),
             )),
@@ -206,9 +219,50 @@ export async function stage(
         config,
         functions,
         types,
+        external,
     )
     await writeFile(join(stagePath, '.hashes.json'), hashesJson)
     return code
+}
+
+type External = { [functionName: string]: string[] }
+
+/**
+A function leaving modules out of its bundle is bundled as an ES module: Lambda's Node.js runtime
+cannot `require` an ES module (it runs with `--no-experimental-require-module`), while an ES module
+imports CommonJS and ES modules alike, from a layer's `/opt/nodejs/node_modules` too.
+*/
+function handlerFileName(modules: string[]) {
+    return modules.length === 0 ? 'index.js' : 'index.mjs'
+}
+
+// What bundled CommonJS code expects to find, for an ES module bundle. Globals rather than
+// bindings, so a bundled module declaring its own `require` shadows them instead of clashing.
+const commonJsGlobals = [
+    "import{createRequire as riddanceCreateRequire}from'node:module'",
+    'globalThis.require??=riddanceCreateRequire(import.meta.url)',
+    'globalThis.__filename??=new URL(import.meta.url).pathname',
+    "globalThis.__dirname??=new URL('.',import.meta.url).pathname",
+].join(';')
+
+const packageNamePattern = /^(@[a-z0-9][\w.-]*\/)?[a-z0-9][\w.-]*$/iu
+
+/**
+The modules each function leaves out of its bundle, from the glue's `aws.external`, keyed by
+function name: a layer (or the runtime) provides them, and the bundle imports them at run
+time. A module's subpaths are left out with it.
+*/
+export function externalModules(functionNames: string[], glueAws: unknown): External {
+    const external = functionLists(functionNames, glueAws, 'external', 'package names')
+    for (const [name, modules] of Object.entries(external)) {
+        if (modules.some(m => !packageNamePattern.test(m))) {
+            throw new Error(`aws.external of ${name} must be a list of package names.`)
+        }
+        if (new Set(modules).size !== modules.length) {
+            throw new Error(`aws.external of ${name} names a package twice.`)
+        }
+    }
+    return external
 }
 
 const hostPathPattern = /(^|\/)node_modules\/@(riddance|movogo-io)\/host$/u
@@ -390,10 +444,15 @@ async function rollupAndMinify(
     config: unknown,
     functions: string[],
     types: { [name: string]: 'http' | 'timer' | 'event' },
+    external: External,
 ) {
     const minified = []
-    let rollupCache: RollupCache | undefined
+    // A cached module keeps how its imports were resolved, external or bundled, so functions
+    // leaving different modules out of their bundles must not share a cache.
+    const rollupCaches = new Map<string, RollupCache | undefined>()
     for (const fn of functions) {
+        const modules = external[fn] ?? []
+        const cacheKey = modules.join(' ')
         const functionType = types[fn]
         if (!functionType) {
             throw new Error(`Type of function ${fn} not determined.`)
@@ -401,7 +460,8 @@ async function rollupAndMinify(
         let seriousWarnings = false
         const bundler = await rollup({
             input: 'entry',
-            cache: rollupCache,
+            cache: rollupCaches.get(cacheKey),
+            external: id => modules.some(m => id === m || id.startsWith(m + '/')),
             treeshake: {
                 correctVarValueBeforeDeclaration: false,
                 propertyReadSideEffects: false,
@@ -450,11 +510,12 @@ async function rollupAndMinify(
                 }
             },
         })
-        rollupCache = bundler.cache
+        rollupCaches.set(cacheKey, bundler.cache)
         const {
             output: [{ code, map }, virtualEntry, more],
         } = await bundler.generate({
-            format: 'cjs',
+            format: modules.length === 0 ? 'cjs' : 'es',
+            banner: modules.length === 0 ? undefined : commonJsGlobals,
             compact: true,
             sourcemap: true,
             manualChunks: () => 'entry.js',
@@ -477,7 +538,9 @@ async function rollupAndMinify(
         if (map?.version !== 3) {
             throw new Error('Source map missing.')
         }
-        minified.push(pack(log, host, stagePath, fn, code, { ...map, version: 3 }))
+        minified.push(
+            pack(log, host, stagePath, fn, handlerFileName(modules), code, { ...map, version: 3 }),
+        )
     }
     return await Promise.all(minified)
 }
@@ -487,6 +550,7 @@ async function pack(
     host: Host,
     stagePath: string,
     fn: string,
+    fileName: string,
     source: string,
     map: SourceMap & { version: 3 },
 ) {
@@ -527,7 +591,7 @@ async function pack(
         ),
     ])
 
-    return { fn, code }
+    return { fn, fileName, code }
 }
 
 function gzip(data: ArrayBuffer) {

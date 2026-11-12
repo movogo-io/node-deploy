@@ -26,13 +26,13 @@ live('deploy', () => {
             'Error fetching greeting',
         )
         assert.strictEqual(greeting.message, 'Hello from Riddance, World!')
-    }).timeout(60_000)
+    }).timeout(180_000)
 
     it('should deploy tick-tock', async () => {
         const log = new Log()
         await deployTestCase(log, 'tick-tock')
         assert.deepStrictEqual(log.issues, [])
-    }).timeout(30_000)
+    }).timeout(120_000)
 
     it('should follow the handler filter and topic on every redeploy', async () => {
         const log = new Log()
@@ -95,7 +95,7 @@ live('deploy', () => {
             [],
             'Error fetching',
         )
-    }).timeout(60_000)
+    }).timeout(600_000)
 })
 
 async function deployTestCase(log: Log, name: string) {

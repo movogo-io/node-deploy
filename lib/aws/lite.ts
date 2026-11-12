@@ -50,12 +50,23 @@ export function awsFormRequest(
     )
 }
 
+export function awsBinaryRequest(
+    context: Context,
+    method: string,
+    service: string,
+    path: string,
+    body: Uint8Array,
+    contentType: string,
+) {
+    return awsStringRequest(context, method, service, path, body, contentType)
+}
+
 async function awsStringRequest(
     { env, log }: Context,
     method: string,
     service: string,
     path: string,
-    body: string,
+    body: string | Uint8Array,
     contentType: string,
     target?: string,
 ) {

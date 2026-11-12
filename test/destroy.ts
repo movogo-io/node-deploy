@@ -82,6 +82,12 @@ function answer({ method, service, path, action, parameters }: AwsCall): unknown
                 Functions: Object.keys(functions).map(name => ({
                     FunctionName: name,
                     FunctionArn: `arn:aws:lambda:eu-north-1:123456789012:function:${name}`,
+                    Layers: [
+                        {
+                            Arn: 'arn:aws:lambda:eu-north-1:123456789012:layer:w1-chromium:3',
+                            CodeSize: 81_000_000,
+                        },
+                    ],
                 })),
                 // eslint-disable-next-line unicorn/no-null -- as the API ends a listing
                 NextMarker: null,
@@ -426,7 +432,7 @@ describe('destroy', () => {
         }
     })
 
-    it('deletes exactly what it printed, skips and reports what is not tagged for the stage, and keeps the tables', async () => {
+    it('deletes exactly what it printed, skips and reports what is not tagged for the stage, and keeps the tables and layers', async () => {
         const aws = stubAws(answer)
         const { lines, context: logged } = logging()
         try {
@@ -497,7 +503,9 @@ describe('destroy', () => {
                 [],
             )
             assert.deepStrictEqual(
-                aws.calls.filter(call => call.service === 'dynamodb'),
+                aws.calls.filter(
+                    call => call.service === 'dynamodb' || call.path.includes('/layers'),
+                ),
                 [],
             )
         } finally {

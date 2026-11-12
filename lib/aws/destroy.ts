@@ -47,7 +47,9 @@ type Tags = { [key: string]: string } | undefined
 /**
 Removes what deploys made on a slot, or of one service on it: everything but its tables. The
 whole list is built and printed first, and only that list is deleted; nothing is listed again
-in between, so what gets deleted is what was shown.
+in between, so what gets deleted is what was shown. Layer versions are no deploy's: they are
+published apart, untagged and under a name of the publisher's choosing, and the glue of any
+stage may name them, so none is ever the slot's to delete, whatever it is called.
 */
 export async function destroy(
     context: Context,
