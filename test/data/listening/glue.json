@@ -1,0 +1,11 @@
+{
+  "aws": { "accountId": "123456789012" },
+  "implementations": {},
+  "services": {
+    "listening": {
+      "aws": {
+        "layers": { "gone": [] }
+      }
+    }
+  }
+}

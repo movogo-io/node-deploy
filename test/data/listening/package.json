@@ -1,0 +1,8 @@
+{
+  "name": "listening",
+  "type": "module",
+  "private": true,
+  "engines": {
+    "node": ">=24"
+  }
+}

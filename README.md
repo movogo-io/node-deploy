@@ -65,6 +65,12 @@ Check each point before the first deploy with 0.6.0.
 - On a slot (`w1` to `w9`) a new timer rule is created disabled, and the deploy says so in one
   line. Enable a slot's timers once the slot is complete; see [Timer rules](#timer-rules). Rules
   that exist keep their state, and no other stage changes.
+- A deploy, a `destroy` or a `publish-layer` that fails prints the error to stderr and exits 1,
+  always. Before, a deploy that failed after it had read the service's entrypoints could print
+  nothing and exit 0: the entrypoints are imported into the deploying process, and a service
+  whose imports reach `@movogo-io/host/context`, directly or through a package, registers
+  listeners there that kept Node from reporting the error. `done.` is printed only by a command
+  that completed, so a caller may rely on the exit code alone.
 
 ## Credentials
 

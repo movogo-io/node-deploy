@@ -30,8 +30,17 @@ try {
         await deployService(args)
     }
 } catch (e) {
+    // Never rethrown. Reflecting a service imports its entrypoints into this process, and a
+    // listener for uncaughtException they register (the host's context has one) keeps Node from
+    // printing an error thrown from here and from exiting non-zero: the failed deploy exits 0.
+    printFailure(e)
+    process.exit(1)
+}
+
+function printFailure(e: unknown) {
     if (!(e instanceof GlueFileError)) {
-        throw e
+        console.error(e)
+        return
     }
     console.error(e.message)
     if (args.command === 'deploy' && args.glueFile === undefined) {
@@ -39,7 +48,6 @@ try {
             "Try to see if there isn't a glue project you can clone next to this project, or name the glue file last.",
         )
     }
-    process.exit(1)
 }
 
 async function deployService({
