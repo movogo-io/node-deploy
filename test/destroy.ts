@@ -505,6 +505,33 @@ describe('destroy', () => {
         }
     })
 
+    it('stops at the first delete that fails, leaving the rest for the next run', async () => {
+        const aws = stubAws(call =>
+            call.method === 'DELETE' && call.path.endsWith('/w1-crew-sweep')
+                ? new Response('{"message":"Rate exceeded"}', { status: 400 })
+                : answer(call),
+        )
+        try {
+            await assert.rejects(destroy(context, 'w1', { dryRun: false }), {
+                message: 'Error deleting lambda w1-crew-sweep',
+            })
+
+            assert.deepStrictEqual(
+                aws.calls
+                    .filter(call => !isRead(call))
+                    .map(summary)
+                    .slice(-3),
+                [
+                    'apigateway DELETE /v2/apis/a2',
+                    'lambda DELETE /2015-03-31/functions/w1-crew-get',
+                    'lambda DELETE /2015-03-31/functions/w1-crew-sweep',
+                ],
+            )
+        } finally {
+            aws.restore()
+        }
+    })
+
     it('takes only one service when asked to, and keeps the topics it shares', async () => {
         const aws = stubAws(answer)
         const { lines, context: logged } = logging()
