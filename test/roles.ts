@@ -143,7 +143,7 @@ describe('policy statements', () => {
                 ]),
             {
                 message:
-                    'aws.policyStatements[1] carries Principal, Sid, which a role policy cannot hold: only Effect, Resource, Action and Condition are rendered.',
+                    'aws.policyStatements[1] carries Principal, Sid, which a role policy cannot hold: only Effect, Resource, Action and Condition are rendered. Versions before 0.5.0 dropped such a key without saying so, so removing it from the glue leaves the role as it is.',
             },
         )
     })
