@@ -342,26 +342,56 @@ async function updateLambda(
     if (!target) {
         throw new Error('No config')
     }
-    const cpus = lambdaArchitecture(target)
-    const awsConfig = lambdaConfig(target, role, environment, layers)
-    if (!isDeepStrictEqual({ cpus, hash: code.sha256 }, { cpus: awsFn.cpus, hash: awsFn.hash })) {
-        context.log.trace(`updating code for lambda ${name} (${awsFn.size} -> ${code.size})`)
-        await okResponse(
-            awsRequest(
-                context,
-                'PUT',
-                'lambda',
-                `/2015-03-31/functions/${prefix}-${service}-${name}/code`,
-                {
-                    ZipFile: code.zipped,
-                    Architectures: cpus,
-                },
-            ),
-            'Error updating code for lambda ' + name,
-        )
+    const functionName = `${prefix}-${service}-${name}`
+    // A layer new to the function is attached before the code that imports from it, so a layer
+    // Lambda refuses leaves the function running the code it had.
+    if (layers.some(arn => !awsFn.layers.includes(arn))) {
+        await updateConfig(context, name, functionName, role, target, awsFn, environment, layers)
+        await updateCode(context, name, functionName, target, awsFn, code)
+        return
     }
+    await updateCode(context, name, functionName, target, awsFn, code)
+    await updateConfig(context, name, functionName, role, target, awsFn, environment, layers)
+}
+
+async function updateCode(
+    context: Context,
+    name: string,
+    functionName: string,
+    target: Target,
+    awsFn: AwsFunctionLite,
+    code: { zipped: string; sha256: string; size: string },
+) {
+    const cpus = lambdaArchitecture(target)
+    if (isDeepStrictEqual({ cpus, hash: code.sha256 }, { cpus: awsFn.cpus, hash: awsFn.hash })) {
+        return
+    }
+    context.log.trace(`updating code for lambda ${name} (${awsFn.size} -> ${code.size})`)
+    // Lambda answers 409 while a configuration update just made is still being applied.
+    await retryConflict(() =>
+        okResponse(
+            awsRequest(context, 'PUT', 'lambda', `/2015-03-31/functions/${functionName}/code`, {
+                ZipFile: code.zipped,
+                Architectures: cpus,
+            }),
+            'Error updating code for lambda ' + name,
+        ),
+    )
+}
+
+async function updateConfig(
+    context: Context,
+    name: string,
+    functionName: string,
+    role: string,
+    target: Target,
+    awsFn: AwsFunctionLite,
+    environment: { [key: string]: string },
+    layers: string[],
+) {
+    const awsConfig = lambdaConfig(target, role, environment, layers)
     if (
-        !isDeepStrictEqual(
+        isDeepStrictEqual(
             {
                 env: awsConfig.Environment.Variables,
                 memory: awsConfig.MemorySize,
@@ -378,20 +408,21 @@ async function updateLambda(
             },
         )
     ) {
-        context.log.trace('updating config for lambda ' + name)
-        await retryConflict(() =>
-            okResponse(
-                awsRequest(
-                    context,
-                    'PUT',
-                    'lambda',
-                    `/2015-03-31/functions/${prefix}-${service}-${name}/configuration`,
-                    awsConfig,
-                ),
-                'Error updating config for lambda ' + name,
-            ),
-        )
+        return
     }
+    context.log.trace('updating config for lambda ' + name)
+    await retryConflict(() =>
+        okResponse(
+            awsRequest(
+                context,
+                'PUT',
+                'lambda',
+                `/2015-03-31/functions/${functionName}/configuration`,
+                awsConfig,
+            ),
+            'Error updating config for lambda ' + name,
+        ),
+    )
 }
 
 async function deleteLambda(context: Context, prefix: string, service: string, name: string) {

@@ -1,5 +1,6 @@
 import { jsonResponse, okResponse } from '@riddance/fetch'
 import { createHash } from 'node:crypto'
+import { functionLists } from '../../glue.js'
 import { type Context, awsBinaryRequest, awsRequest } from '../lite.js'
 
 export type Layers = { [functionName: string]: string[] }
@@ -15,42 +16,24 @@ function name. A glue file is per stage, so it holds that stage's ARNs. The orde
 later layer's files overwrite an earlier one's in `/opt`.
 */
 export function desiredLayers(functionNames: string[], glueAws: unknown): Layers {
-    const glue =
-        glueAws !== null && typeof glueAws === 'object' && 'layers' in glueAws ? glueAws.layers : {}
-    if (glue === null || typeof glue !== 'object' || Array.isArray(glue)) {
-        throw new Error('aws.layers must map function names to lists of layer version ARNs.')
+    const layers = functionLists(functionNames, glueAws, 'layers', 'layer version ARNs')
+    for (const [name, arns] of Object.entries(layers)) {
+        const malformed = arns.filter(arn => !layerVersionArnPattern.test(arn))
+        if (malformed.length !== 0) {
+            throw new Error(
+                `aws.layers of ${name} has ${malformed.join(', ')}, which is no layer version ARN (arn:aws:lambda:<region>:<account>:layer:<name>:<version>).`,
+            )
+        }
+        if (new Set(arns).size !== arns.length) {
+            throw new Error(`aws.layers of ${name} names a layer version twice.`)
+        }
+        if (layersPerFunctionMax < arns.length) {
+            throw new Error(
+                `aws.layers of ${name} names ${arns.length} layers; Lambda takes at most ${layersPerFunctionMax}.`,
+            )
+        }
     }
-    const unknown = Object.keys(glue).filter(name => !functionNames.includes(name))
-    if (unknown.length !== 0) {
-        throw new Error(
-            `aws.layers names ${unknown.join(', ')}, which the service has no function of.`,
-        )
-    }
-    return Object.fromEntries(
-        Object.entries(glue).map(([name, list]: [string, unknown]) => {
-            const arns = Array.isArray(list)
-                ? list.filter((arn): arn is string => typeof arn === 'string')
-                : []
-            if (!Array.isArray(list) || arns.length !== list.length) {
-                throw new Error(`aws.layers of ${name} must be a list of layer version ARNs.`)
-            }
-            const malformed = arns.filter(arn => !layerVersionArnPattern.test(arn))
-            if (malformed.length !== 0) {
-                throw new Error(
-                    `aws.layers of ${name} has ${malformed.join(', ')}, which is no layer version ARN (arn:aws:lambda:<region>:<account>:layer:<name>:<version>).`,
-                )
-            }
-            if (new Set(arns).size !== arns.length) {
-                throw new Error(`aws.layers of ${name} names a layer version twice.`)
-            }
-            if (layersPerFunctionMax < arns.length) {
-                throw new Error(
-                    `aws.layers of ${name} names ${arns.length} layers; Lambda takes at most ${layersPerFunctionMax}.`,
-                )
-            }
-            return [name, arns] as const
-        }),
-    )
+    return layers
 }
 
 /**
@@ -71,20 +54,24 @@ export async function publishLayer(
         throw new Error(`${bucket} is no S3 bucket name.`)
     }
     const description = `sha256:${createHash('sha256').update(zip).digest('hex')}`
+    const published = await findVersion(context, name, description)
     if (zip.length <= inlineZipBytesMax) {
         return (
-            (await findVersion(context, name, description)) ??
+            published ??
             (await publishVersion(context, name, description, {
                 ZipFile: zip.toString('base64'),
             }))
         )
     }
-    if (!bucket) {
-        throw new Error(
-            `The zip is ${Math.ceil(zip.length / 1024 / 1024)} MB; Lambda takes at most 50 MB in the request, so name an S3 bucket in the same region to upload it through.`,
-        )
+    if (bucket) {
+        return await publishThroughBucket(context, name, description, zip, bucket, published)
     }
-    return await publishThroughBucket(context, name, description, zip, bucket)
+    if (published) {
+        return published
+    }
+    throw new Error(
+        `The zip is ${Math.ceil(zip.length / 1024 / 1024)} MB; Lambda takes at most 50 MB in the request, so name an S3 bucket in the same region to upload it through.`,
+    )
 }
 
 async function publishThroughBucket(
@@ -93,6 +80,7 @@ async function publishThroughBucket(
     description: string,
     zip: Buffer,
     bucket: string,
+    published: string | undefined,
 ) {
     const key = `layers/${name}/${description.slice('sha256:'.length)}.zip`
     const objectPath = `/${bucket}/${key}`
@@ -101,7 +89,6 @@ async function publishThroughBucket(
             awsRequest(context, 'DELETE', 's3', objectPath),
             `Error removing the uploaded layer ${name} from ${bucket}`,
         )
-    const published = await findVersion(context, name, description)
     if (published) {
         // A run that died between publishing and removing left the upload behind.
         await removeUpload()

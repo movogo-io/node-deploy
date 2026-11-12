@@ -118,6 +118,8 @@ describe('publish layer', () => {
     })
 
     it('refuses a zip over 50 MB without a bucket to upload it through', async () => {
+        answer([{ LayerVersions: [] }])
+
         await assert.rejects(
             publishLayer(context, Buffer.alloc(50 * 1024 * 1024 + 1), 'chromium', undefined),
             {
@@ -168,6 +170,33 @@ describe('publish layer', () => {
         assert.deepStrictEqual(
             requests.map(r => `${r.method} ${r.url}`),
             [`GET ${versions}`, `GET ${versions}?Marker=next`],
+        )
+    })
+
+    it('returns the version already published from a zip over 50 MB, needing no bucket', async () => {
+        answer([
+            {
+                LayerVersions: [
+                    {
+                        LayerVersionArn: 'arn:published',
+                        Description:
+                            'sha256:50dac11b8750f1398495b580e1f6158fef5ddbdc7f6500e7117c2e12f59c88e9',
+                    },
+                ],
+            },
+        ])
+
+        const arn = await publishLayer(
+            context,
+            Buffer.alloc(50 * 1024 * 1024 + 1),
+            'chromium',
+            undefined,
+        )
+
+        assert.strictEqual(arn, 'arn:published')
+        assert.deepStrictEqual(
+            requests.map(r => `${r.method} ${r.url}`),
+            [`GET ${versions}`],
         )
     })
 

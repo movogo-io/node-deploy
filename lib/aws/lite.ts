@@ -11,6 +11,7 @@ let cachedConfigLines: string[] | undefined
 export async function localAwsEnv(
     region: string | undefined,
     profile: string,
+    orDefaultProfile = true,
 ): Promise<{
     AWS_REGION: string
     AWS_ACCESS_KEY_ID: string
@@ -43,11 +44,11 @@ export async function localAwsEnv(
     let sectionBeginIx = -1
     const section = `[${profile}]`
     sectionBeginIx = configLines.indexOf(section)
-    if (sectionBeginIx === -1) {
+    if (sectionBeginIx === -1 && orDefaultProfile) {
         sectionBeginIx = configLines.indexOf('[default]')
     }
     if (sectionBeginIx === -1) {
-        throw new Error('Section not found.')
+        throw new Error(`Section ${section} not found in the AWS credentials file.`)
     }
     const sectionEndIx = configLines.findIndex(
         (line, ix) => ix > sectionBeginIx && line.startsWith('['),

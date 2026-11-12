@@ -11,7 +11,8 @@ if (!zipPath || !name) {
 
 const arn = await publishLayer(
     {
-        env: await localAwsEnv(undefined, process.env.AWS_PROFILE ?? 'default'),
+        // A profile that is not there must not publish to the default one's account.
+        env: await localAwsEnv(undefined, process.env.AWS_PROFILE ?? 'default', false),
         log: {
             trace: (message: string) => {
                 console.error(message)

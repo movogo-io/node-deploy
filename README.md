@@ -49,9 +49,11 @@ refuses the deploy.
   `concurrencyMax`.
 
 A function named in neither `layers` nor `external` is bundled and deployed as before. The glue
-owns a function's layers: a layer attached by hand is removed by the next deploy that changes the
-function's configuration. A deploy updates code before configuration, so a function gaining a layer
-and the externals it provides runs briefly without the layer. The deploy principal needs
+owns a function's layers: a layer attached by hand, to any function of the service, is removed by
+the next deploy. A function gaining a layer has its configuration updated before its code, so a
+layer Lambda refuses fails the deploy with that function still running the code it had (its
+siblings may already be updated). A function gaining none has its code updated first, so one that
+only loses layers stops importing from them before they go. The deploy principal needs
 `lambda:GetLayerVersion` on the layers it attaches.
 
 ## Publishing a layer
@@ -61,12 +63,13 @@ publish-layer <zip> <name> [bucket]
 ```
 
 Publishes the zip as a new version of the layer `<name>` and prints the version's ARN, for the glue.
-A version already published from the same zip is printed instead of publishing another. Lambda takes
-at most 50 MB in the request; a larger zip needs an S3 bucket in the same region, which it is
-uploaded to and removed from once published. Credentials come from the environment, or from the
-`AWS_PROFILE` (else `default`) section of the shared credentials file; the printed ARN names the
-account it went to. It needs `lambda:ListLayerVersions` and `lambda:PublishLayerVersion`, and
-`s3:PutObject` and `s3:DeleteObject` on the bucket.
+A version already published from the same zip is printed instead of publishing another, bucket or
+not. Lambda takes at most 50 MB in the request; a larger zip needs an S3 bucket in the same region,
+which it is uploaded to and removed from once published. Credentials come from the environment, or
+from the `AWS_PROFILE` (else `default`) section of the shared credentials file, and a profile the
+file has no section of is refused; the printed ARN names the account it went to. It needs
+`lambda:ListLayerVersions` and `lambda:PublishLayerVersion`, and `s3:PutObject` and
+`s3:DeleteObject` on the bucket.
 
 A Node.js layer zip has its packages under `nodejs/node_modules/`. For Chromium:
 

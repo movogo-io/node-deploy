@@ -11,6 +11,7 @@ import { isDeepStrictEqual } from 'node:util'
 import zlib from 'node:zlib'
 // eslint-disable-next-line camelcase
 import { minify_sync } from 'terser'
+import { functionLists } from './glue.js'
 import { install } from './npm.js'
 
 type Implementation = {
@@ -199,35 +200,16 @@ function name: a layer (or the runtime) provides them, and the bundle imports th
 time. A module's subpaths are left out with it.
 */
 export function externalModules(functionNames: string[], glueAws: unknown): External {
-    const glue =
-        glueAws !== null && typeof glueAws === 'object' && 'external' in glueAws
-            ? glueAws.external
-            : {}
-    if (glue === null || typeof glue !== 'object' || Array.isArray(glue)) {
-        throw new Error('aws.external must map function names to lists of package names.')
+    const external = functionLists(functionNames, glueAws, 'external', 'package names')
+    for (const [name, modules] of Object.entries(external)) {
+        if (modules.some(m => !packageNamePattern.test(m))) {
+            throw new Error(`aws.external of ${name} must be a list of package names.`)
+        }
+        if (new Set(modules).size !== modules.length) {
+            throw new Error(`aws.external of ${name} names a package twice.`)
+        }
     }
-    const unknown = Object.keys(glue).filter(name => !functionNames.includes(name))
-    if (unknown.length !== 0) {
-        throw new Error(
-            `aws.external names ${unknown.join(', ')}, which the service has no function of.`,
-        )
-    }
-    return Object.fromEntries(
-        Object.entries(glue).map(([name, list]: [string, unknown]) => {
-            const modules = Array.isArray(list)
-                ? list.filter(
-                      (m): m is string => typeof m === 'string' && packageNamePattern.test(m),
-                  )
-                : []
-            if (!Array.isArray(list) || modules.length !== list.length) {
-                throw new Error(`aws.external of ${name} must be a list of package names.`)
-            }
-            if (new Set(modules).size !== modules.length) {
-                throw new Error(`aws.external of ${name} names a package twice.`)
-            }
-            return [name, modules] as const
-        }),
-    )
+    return external
 }
 
 const hostPathPattern = /(^|\/)node_modules\/@(riddance|movogo-io)\/host$/u
