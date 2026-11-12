@@ -114,14 +114,7 @@ export async function unsubscribeSurplus(
                 surplus.map(async subscription => {
                     context.log.trace(`unsubscribing ${subscription.name} from ${topicArn}`)
                     try {
-                        await sns(
-                            context,
-                            {
-                                Action: 'Unsubscribe',
-                                SubscriptionArn: subscription.SubscriptionArn,
-                            },
-                            'Error unsubscribing from topic.',
-                        )
+                        await unsubscribe(context, subscription.SubscriptionArn)
                     } catch (e) {
                         if (!isNotFound(e)) {
                             throw e
@@ -142,42 +135,9 @@ function arnOfTopic(
     return `arn:aws:sns:${region}:${account}:${prefix}-${event.topic}-${event.type}`
 }
 
-async function listLambdaSubscriptions(
-    context: Context,
-    topicArn: string,
-    nextToken?: string,
-): Promise<{ Endpoint: string; SubscriptionArn: string }[]> {
+async function listLambdaSubscriptions(context: Context, topicArn: string) {
     try {
-        const {
-            ListSubscriptionsByTopicResponse: { ListSubscriptionsByTopicResult: page },
-        } = await sns<{
-            ListSubscriptionsByTopicResponse: {
-                ListSubscriptionsByTopicResult: {
-                    NextToken: string | null
-                    Subscriptions: {
-                        Endpoint: string
-                        Protocol: string
-                        SubscriptionArn: string
-                    }[]
-                }
-            }
-        }>(
-            context,
-            {
-                Action: 'ListSubscriptionsByTopic',
-                TopicArn: topicArn,
-                ...(nextToken && { NextToken: nextToken }),
-            },
-            'Error listing subscriptions.',
-        )
-        const subscriptions = page.Subscriptions.filter(s => s.Protocol === 'lambda')
-        if (!page.NextToken) {
-            return subscriptions
-        }
-        return [
-            ...subscriptions,
-            ...(await listLambdaSubscriptions(context, topicArn, page.NextToken)),
-        ]
+        return (await listSubscriptions(context, topicArn)).filter(s => s.Protocol === 'lambda')
     } catch (e) {
         // A new handler's topic is listed here before syncTopics creates it.
         if (isNotFound(e)) {
@@ -185,6 +145,87 @@ async function listLambdaSubscriptions(
         }
         throw e
     }
+}
+
+export async function listSubscriptions(
+    context: Context,
+    topicArn: string,
+    nextToken?: string,
+): Promise<{ Endpoint: string; Protocol: string; SubscriptionArn: string }[]> {
+    const {
+        ListSubscriptionsByTopicResponse: { ListSubscriptionsByTopicResult: page },
+    } = await sns<{
+        ListSubscriptionsByTopicResponse: {
+            ListSubscriptionsByTopicResult: {
+                NextToken: string | null
+                Subscriptions: { Endpoint: string; Protocol: string; SubscriptionArn: string }[]
+            }
+        }
+    }>(
+        context,
+        {
+            Action: 'ListSubscriptionsByTopic',
+            TopicArn: topicArn,
+            ...(nextToken && { NextToken: nextToken }),
+        },
+        'Error listing subscriptions.',
+    )
+    if (!page.NextToken) {
+        return page.Subscriptions
+    }
+    return [...page.Subscriptions, ...(await listSubscriptions(context, topicArn, page.NextToken))]
+}
+
+export async function listTopicArns(context: Context, nextToken?: string): Promise<string[]> {
+    const {
+        ListTopicsResponse: { ListTopicsResult: page },
+    } = await sns<{
+        ListTopicsResponse: {
+            ListTopicsResult: { NextToken: string | null; Topics: { TopicArn: string }[] }
+        }
+    }>(
+        context,
+        { Action: 'ListTopics', ...(nextToken && { NextToken: nextToken }) },
+        'Error listing topics.',
+    )
+    const arns = page.Topics.map(topic => topic.TopicArn)
+    if (!page.NextToken) {
+        return arns
+    }
+    return [...arns, ...(await listTopicArns(context, page.NextToken))]
+}
+
+export async function getTopicTags(context: Context, topicArn: string) {
+    const {
+        ListTagsForResourceResponse: {
+            ListTagsForResourceResult: { Tags: tags },
+        },
+    } = await sns<{
+        ListTagsForResourceResponse: {
+            ListTagsForResourceResult: { Tags: { Key: string; Value: string }[] | null }
+        }
+    }>(
+        context,
+        { Action: 'ListTagsForResource', ResourceArn: topicArn },
+        `Error reading tags of topic ${topicArn}.`,
+    )
+    return Object.fromEntries((tags ?? []).map(tag => [tag.Key, tag.Value]))
+}
+
+export async function unsubscribe(context: Context, subscriptionArn: string) {
+    await sns(
+        context,
+        { Action: 'Unsubscribe', SubscriptionArn: subscriptionArn },
+        'Error unsubscribing from topic.',
+    )
+}
+
+export async function deleteTopic(context: Context, topicArn: string) {
+    await sns(
+        context,
+        { Action: 'DeleteTopic', TopicArn: topicArn },
+        `Error deleting topic ${topicArn}.`,
+    )
 }
 
 async function syncFilterPolicy(

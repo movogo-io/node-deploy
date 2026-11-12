@@ -160,25 +160,7 @@ export async function getFunctions(
     const ours = await selectOwnFunctions(candidates, fnPrefix, reflectedNames, {
         service,
         environment: prefix,
-        tagsOf: async fn => {
-            // The Lambda control plane throttles at a low shared rate; a throttled or failed
-            // read is retried as createLambda retries its own request.
-            const { Tags } = await jsonResponse<{ Tags?: { [key: string]: string } }>(
-                retry(
-                    context.log,
-                    () =>
-                        awsRequest(
-                            context,
-                            'GET',
-                            'lambda',
-                            `/2017-03-31/tags/${encodeURIComponent(fn.FunctionArn)}`,
-                        ),
-                    r => (r.status === 429 || r.status >= 500 ? 5 : undefined),
-                ),
-                'Error reading tags of function ' + fn.FunctionName,
-            )
-            return Tags
-        },
+        tagsOf: fn => getFunctionTags(context, fn),
         leftAlone: (fn, tags) => {
             if (typeof tags?.service === 'string' && tags.service !== service) {
                 // A sibling's function under a prefix of ours: expected, and quiet.
@@ -193,6 +175,29 @@ export async function getFunctions(
         },
     })
     return ours.map(fn => asLite(fn, fnPrefix))
+}
+
+// The Lambda control plane throttles at a low shared rate; a throttled or failed read is retried
+// as createLambda retries its own request.
+export async function getFunctionTags(
+    context: Context,
+    fn: { FunctionName: string; FunctionArn: string },
+) {
+    const { Tags } = await jsonResponse<{ Tags?: { [key: string]: string } }>(
+        retry(
+            context.log,
+            () =>
+                awsRequest(
+                    context,
+                    'GET',
+                    'lambda',
+                    `/2017-03-31/tags/${encodeURIComponent(fn.FunctionArn)}`,
+                ),
+            r => (r.status === 429 || r.status >= 500 ? 5 : undefined),
+        ),
+        'Error reading tags of function ' + fn.FunctionName,
+    )
+    return Tags
 }
 
 /**
@@ -392,14 +397,13 @@ async function updateLambda(
 
 async function deleteLambda(context: Context, prefix: string, service: string, name: string) {
     context.log.trace('deleting lambda ' + name)
+    await deleteFunction(context, `${prefix}-${service}-${name}`)
+}
+
+export async function deleteFunction(context: Context, fullName: string) {
     await okResponse(
-        awsRequest(
-            context,
-            'DELETE',
-            'lambda',
-            `/2015-03-31/functions/${prefix}-${service}-${name}`,
-        ),
-        'Error deleting lambda ' + name,
+        awsRequest(context, 'DELETE', 'lambda', `/2015-03-31/functions/${fullName}`),
+        'Error deleting lambda ' + fullName,
     )
 }
 

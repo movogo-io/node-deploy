@@ -67,30 +67,14 @@ async function getOwnRules(
     reflectedNames: string[],
 ) {
     const namePrefix = `${prefix}-${service}-`
-    const candidates = []
-    for (let next: string | undefined; ;) {
-        const page = await events<{
-            Rules: { Name: string; Arn: string; State: string }[]
-            NextToken?: string
-        }>(context, 'ListRules', { NamePrefix: namePrefix, NextToken: next }, 'listing rules')
-        candidates.push(...page.Rules.map(rule => ({ FunctionName: rule.Name, ...rule })))
-        if (!page.NextToken) {
-            break
-        }
-        next = page.NextToken
-    }
+    const candidates = (await listRules(context, namePrefix)).map(rule => ({
+        FunctionName: rule.Name,
+        ...rule,
+    }))
     const ours = await selectOwnFunctions(candidates, namePrefix, reflectedNames, {
         service,
         environment: prefix,
-        tagsOf: async rule => {
-            const { Tags: tags } = await events<{ Tags?: { Key: string; Value: string }[] }>(
-                context,
-                'ListTagsForResource',
-                { ResourceARN: rule.Arn },
-                `reading tags of rule ${rule.Name}`,
-            )
-            return Object.fromEntries((tags ?? []).map(tag => [tag.Key, tag.Value]))
-        },
+        tagsOf: rule => getRuleTags(context, rule),
         leftAlone: (rule, tags) => {
             if (typeof tags?.service === 'string' && tags.service !== service) {
                 context.log.trace(`left alone: rule ${rule.Name} belongs to ${tags.service}`)
@@ -137,23 +121,61 @@ async function putRule(
 // A rule cannot be deleted while it has targets.
 async function deleteRule(context: Context, name: string, fullName: string) {
     context.log.trace(`deleting event bridge rule ${name}, whose timer is gone`)
+    const ids = await listRuleTargetIds(context, fullName)
+    if (ids.length !== 0) {
+        await removeRuleTargets(context, fullName, ids)
+    }
+    await deleteRuleByName(context, fullName)
+}
+
+export async function listRules(context: Context, namePrefix: string) {
+    const rules = []
+    for (let next: string | undefined; ;) {
+        const page = await events<{
+            Rules: { Name: string; Arn: string; State: string }[]
+            NextToken?: string
+        }>(context, 'ListRules', { NamePrefix: namePrefix, NextToken: next }, 'listing rules')
+        rules.push(...page.Rules)
+        if (!page.NextToken) {
+            return rules
+        }
+        next = page.NextToken
+    }
+}
+
+export async function getRuleTags(context: Context, rule: { Name: string; Arn: string }) {
+    const { Tags: tags } = await events<{ Tags?: { Key: string; Value: string }[] }>(
+        context,
+        'ListTagsForResource',
+        { ResourceARN: rule.Arn },
+        `reading tags of rule ${rule.Name}`,
+    )
+    return Object.fromEntries((tags ?? []).map(tag => [tag.Key, tag.Value]))
+}
+
+export async function listRuleTargetIds(context: Context, fullName: string) {
     const { Targets: targets } = await events<{ Targets: { Id: string }[] }>(
         context,
         'ListTargetsByRule',
         { Rule: fullName },
         `listing targets of rule ${fullName}`,
     )
-    if (targets.length !== 0) {
-        const removed = await events<{ FailedEntryCount: number }>(
-            context,
-            'RemoveTargets',
-            { Rule: fullName, Ids: targets.map(target => target.Id) },
-            `removing targets of rule ${fullName}`,
-        )
-        if (removed.FailedEntryCount !== 0) {
-            throw new Error(`Could not remove the targets of rule ${fullName}.`)
-        }
+    return targets.map(target => target.Id)
+}
+
+export async function removeRuleTargets(context: Context, fullName: string, ids: string[]) {
+    const removed = await events<{ FailedEntryCount: number }>(
+        context,
+        'RemoveTargets',
+        { Rule: fullName, Ids: ids },
+        `removing targets of rule ${fullName}`,
+    )
+    if (removed.FailedEntryCount !== 0) {
+        throw new Error(`Could not remove the targets of rule ${fullName}.`)
     }
+}
+
+export async function deleteRuleByName(context: Context, fullName: string) {
     await okResponse(
         eventsRequest(context, 'DeleteRule', { Name: fullName }),
         `Error deleting rule ${fullName}.`,

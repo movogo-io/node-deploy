@@ -1,4 +1,6 @@
+import { jsonResponse, okResponse } from '@riddance/fetch'
 import type { Json } from '@movogo-io/host/lib/context'
+import { type Context, awsRequest } from '../lite.js'
 
 // spell-checker: ignore ispresent, CWLI
 
@@ -30,6 +32,46 @@ export function logQueryLink(
             lang: 'CWLI',
         }),
     ).replaceAll("'", '%27')}`
+}
+
+export async function listLogGroups(context: Context, namePrefix: string) {
+    const names: string[] = []
+    for (let next: string | undefined; ;) {
+        const page = await jsonResponse<{
+            logGroups: { logGroupName: string }[]
+            nextToken?: string
+        }>(
+            logsRequest(context, 'DescribeLogGroups', {
+                logGroupNamePrefix: namePrefix,
+                nextToken: next,
+            }),
+            'Error listing log groups.',
+        )
+        names.push(...page.logGroups.map(group => group.logGroupName))
+        if (!page.nextToken) {
+            return names
+        }
+        next = page.nextToken
+    }
+}
+
+export async function deleteLogGroup(context: Context, name: string) {
+    await okResponse(
+        logsRequest(context, 'DeleteLogGroup', { logGroupName: name }),
+        `Error deleting log group ${name}.`,
+    )
+}
+
+function logsRequest(context: Context, action: string, body: unknown) {
+    return awsRequest(
+        context,
+        'POST',
+        'logs',
+        '',
+        body,
+        `Logs_20140328.${action}`,
+        'application/x-amz-json-1.1',
+    )
 }
 
 function serializeValue(v: Json): string {

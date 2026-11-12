@@ -133,6 +133,7 @@ export type AwsGatewayApi = {
     name: string
     protocolType: 'HTTP' | 'REST'
     apiEndpoint: string
+    tags?: { [key: string]: string }
     corsConfiguration: {
         allowOrigins: string[]
         allowCredentials: false
@@ -150,6 +151,13 @@ export function getApis(context: Context, prefix: string) {
         '/v2/apis/',
         (items: AwsGatewayApi[]) => items.filter(a => a.name.startsWith(`${prefix}-`)),
         'Error getting APIs.',
+    )
+}
+
+export async function deleteApi(context: Context, apiId: string) {
+    await okResponse(
+        awsRequest(context, 'DELETE', 'apigateway', `/v2/apis/${apiId}`),
+        `Error deleting API ${apiId}.`,
     )
 }
 

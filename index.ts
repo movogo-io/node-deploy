@@ -6,6 +6,8 @@ import { getCurrentState, sync } from './lib/aws/sync.js'
 import { getGlue } from './lib/glue.js'
 import { buildDirectory, stage } from './lib/stage.js'
 
+export { destroy } from './lib/aws/destroy.js'
+
 export async function deploy(
     context: {
         log: {

@@ -151,6 +151,104 @@ async function createRole(
     return response.CreateRoleResponse.CreateRoleResult.Role
 }
 
+export async function listRoleNames(context: Context) {
+    const names: string[] = []
+    for (let marker: string | undefined; ;) {
+        const {
+            ListRolesResponse: { ListRolesResult: page },
+        } = await iam<{
+            ListRolesResponse: {
+                ListRolesResult: {
+                    Roles: { RoleName: string }[]
+                    IsTruncated: boolean
+                    Marker: string | null
+                }
+            }
+        }>(context, { Action: 'ListRoles', ...(marker && { Marker: marker }) }, 'listing roles')
+        names.push(...page.Roles.map(role => role.RoleName))
+        if (!page.IsTruncated || !page.Marker) {
+            return names
+        }
+        marker = page.Marker
+    }
+}
+
+export async function getRoleTags(context: Context, roleName: string) {
+    const {
+        ListRoleTagsResponse: {
+            ListRoleTagsResult: { Tags: tags },
+        },
+    } = await iam<{
+        ListRoleTagsResponse: {
+            ListRoleTagsResult: { Tags: { Key: string; Value: string }[] | null }
+        }
+    }>(context, { Action: 'ListRoleTags', RoleName: roleName }, `reading tags of role ${roleName}`)
+    return Object.fromEntries((tags ?? []).map(tag => [tag.Key, tag.Value]))
+}
+
+export async function listRolePolicyNames(context: Context, roleName: string) {
+    const {
+        ListRolePoliciesResponse: {
+            ListRolePoliciesResult: { PolicyNames: names },
+        },
+    } = await iam<{
+        ListRolePoliciesResponse: { ListRolePoliciesResult: { PolicyNames: string[] | null } }
+    }>(
+        context,
+        { Action: 'ListRolePolicies', RoleName: roleName },
+        `listing policies of role ${roleName}`,
+    )
+    return names ?? []
+}
+
+export async function listAttachedPolicyNames(context: Context, roleName: string) {
+    const {
+        ListAttachedRolePoliciesResponse: {
+            ListAttachedRolePoliciesResult: { AttachedPolicies: attached },
+        },
+    } = await iam<{
+        ListAttachedRolePoliciesResponse: {
+            ListAttachedRolePoliciesResult: { AttachedPolicies: { PolicyName: string }[] | null }
+        }
+    }>(
+        context,
+        { Action: 'ListAttachedRolePolicies', RoleName: roleName },
+        `listing managed policies of role ${roleName}`,
+    )
+    return (attached ?? []).map(policy => policy.PolicyName)
+}
+
+export async function deleteRolePolicy(context: Context, roleName: string, policyName: string) {
+    await okResponse(
+        iamRequest(context, {
+            Action: 'DeleteRolePolicy',
+            RoleName: roleName,
+            PolicyName: policyName,
+        }),
+        `Error deleting policy ${policyName} of role ${roleName}.`,
+    )
+}
+
+export async function deleteRole(context: Context, roleName: string) {
+    await okResponse(
+        iamRequest(context, { Action: 'DeleteRole', RoleName: roleName }),
+        `Error deleting role ${roleName}.`,
+    )
+}
+
+function iam<T>(context: Context, parameters: { [key: string]: string }, doing: string) {
+    return jsonResponse<T>(iamRequest(context, parameters), `Error ${doing}.`)
+}
+
+function iamRequest(context: Context, parameters: { [key: string]: string }) {
+    return awsRequest(
+        context,
+        'GET',
+        'iam',
+        `?${new URLSearchParams({ Version: '2010-05-08', ...parameters }).toString()}`,
+    )
+}
+
 export async function assignPolicy(
     context: Context,
     prefix: string,
