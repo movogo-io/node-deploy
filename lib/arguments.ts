@@ -38,7 +38,11 @@ export const usage = `Usage:
                         <stage> in aws.slots and declare aws.accountId, and the credentials
                         must be of that account.
     --service <name>    Only what belongs to that service; topics are kept.
-    --dry-run           Stop after printing the list.`
+    --dry-run           Stop after printing the list.
+
+  deploy --help
+
+    Prints this text.`
 
 export function parseArguments(args: string[]) {
     const { positionals, values } = parseArgs({
@@ -48,10 +52,14 @@ export function parseArguments(args: string[]) {
             glue: { type: 'string' },
             service: { type: 'string' },
             'dry-run': { type: 'boolean' },
+            help: { type: 'boolean', short: 'h' },
         },
         allowPositionals: true,
         strict: true,
     })
+    if (values.help === true) {
+        return { command: 'help' as const }
+    }
     if (positionals[0] === 'destroy') {
         return destroyArguments(positionals.slice(1), values)
     }

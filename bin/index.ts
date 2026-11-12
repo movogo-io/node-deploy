@@ -2,7 +2,7 @@
 
 import { deploy, destroy } from '../index.js'
 import { localAwsEnv } from '../lib/aws/lite.js'
-import { parseArguments } from '../lib/arguments.js'
+import { parseArguments, usage } from '../lib/arguments.js'
 import { GlueFileError } from '../lib/glue.js'
 
 const log = {
@@ -88,6 +88,15 @@ async function deployService({
 }
 
 function parsed() {
+    const command = parseOrExit()
+    if (command.command === 'help') {
+        console.log(usage)
+        process.exit(0)
+    }
+    return command
+}
+
+function parseOrExit() {
     try {
         return parseArguments(process.argv.slice(2))
     } catch (e) {

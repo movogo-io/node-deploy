@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict'
-import { parseArguments } from '../lib/arguments.js'
+import { spawnSync } from 'node:child_process'
+import { join } from 'node:path'
+import { parseArguments, usage } from '../lib/arguments.js'
 
 describe('arguments', () => {
     it('refuses a command line without a stage', () => {
@@ -93,5 +95,37 @@ describe('arguments', () => {
             glueFile: undefined,
             stageDir: '/builds/base',
         })
+    })
+
+    it('reads a request for help in a deploy and in a destroy, whatever else is missing', () => {
+        for (const args of [
+            ['--help'],
+            ['-h'],
+            ['dev', '--help'],
+            ['.', 'dev', 'glue.json', '--stage-dir', '/builds', '--help'],
+            ['destroy', '--help'],
+            ['destroy', 'w1', '--help'],
+            ['destroy', 'dev', '--dry-run', '-h'],
+        ]) {
+            assert.deepStrictEqual(parseArguments(args), { command: 'help' })
+        }
+    })
+
+    it('prints the usage and exits 0 when asked for help, before it reads any credentials', () => {
+        for (const args of [['--help'], ['destroy', '--help'], ['destroy', 'w1', '-h']]) {
+            const { status, stdout, stderr } = spawnSync(
+                process.execPath,
+                [join(process.cwd(), 'bin/index.js'), ...args],
+                { env: {}, encoding: 'utf-8' },
+            )
+            assert.deepStrictEqual(
+                { status, stdout, stderr },
+                {
+                    status: 0,
+                    stdout: `${usage}\n`,
+                    stderr: '',
+                },
+            )
+        }
     })
 })
