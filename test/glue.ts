@@ -744,7 +744,7 @@ describe('a slot', () => {
         )
     })
 
-    it('refuses a reference when the glue declares no account, which another stage does not', async () => {
+    it('refuses a reference when the glue declares no account, as every stage does in its own words', async () => {
         const setup = { slotParametersFrom: 'dev', accountId: undefined, parameters, environments }
         assert.deepStrictEqual(
             await resolving(block, { ...setup, stage: 'w1' }),
@@ -752,10 +752,30 @@ describe('a slot', () => {
                 'svc.secrets.A is a parameter reference, and glue.test.json declares no AWS account: a slot reads another stage\'s parameters only in the account its glue declares. Give it "aws": { "accountId": "…" }. Nothing was changed.',
             ),
         )
-        assert.deepStrictEqual((await resolving(block, { ...setup, stage: 'dev' })).asked, {
-            environments: ['dev-other'],
-            parameters: [['/dev/svc/A', '/dev/other/K']],
-        })
+        for (const stage of ['dev', 'production']) {
+            assert.deepStrictEqual(
+                await resolving(block, { ...setup, stage }),
+                refusal(
+                    `svc.secrets.A is a parameter reference, and glue.test.json declares no AWS account: ${stage} reads its parameters only in the account its glue declares. Give it "aws": { "accountId": "…" }. Nothing was changed.`,
+                ),
+            )
+        }
+    })
+
+    it('asks no account of a block without a reference, on any stage', async () => {
+        for (const stage of ['dev', 'w1']) {
+            assert.deepStrictEqual(
+                await resolving(
+                    { env: { C: '$SAME_AS(other,X)' }, secrets: { PARAMETERS: true, L: 'x' } },
+                    { stage, accountId: undefined, environments },
+                ),
+                {
+                    env: { C: 'slot-x', L: 'x' },
+                    asked: { environments: [`${stage}-other`], parameters: [] },
+                    warned: [],
+                },
+            )
+        }
     })
 
     it('says whose parameter is missing and where it is put from', async () => {

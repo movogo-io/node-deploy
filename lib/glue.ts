@@ -423,6 +423,13 @@ async function prepareEnv(
     if (first && isSlot(prefix)) {
         refuseSlotWithoutSource(glue, from, `${service}.secrets.${first.key}`)
     }
+    // Without an account the account check only warns, and the credentials would be read from
+    // whichever account the profile reaches.
+    if (first && glue.accountId === undefined) {
+        throw new Error(
+            `${service}.secrets.${first.key} is a parameter reference, and ${glue.file} declares no AWS account: ${prefix} reads its parameters only in the account its glue declares. Give it "aws": { "accountId": "…" }. Nothing was changed.`,
+        )
+    }
     const others = entries.filter(({ value }) => !referenceOf(value))
     for (const { block, key, value } of others) {
         const name = unknownVariable(value)

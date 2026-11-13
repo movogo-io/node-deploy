@@ -4,6 +4,9 @@ For `@movogo-io/deploy` 0.6.2 and later. The commands and the reference are desc
 [README](README.md#credentials-from-the-parameter-store); this is the order in which they are
 used, and what to do when something reads wrong.
 
+The `secret` commands check the account, not that the glue file belongs to the stage named; two
+stages in one account are told apart only by naming the right file.
+
 `put`, `init` and `init-key` are run by a person, never by an agent session: a value typed into
 `put` would pass through the session's context, and the keys are made by one of their
 administrators. An agent session may run `list`, `check`, `import`, `restore` and `rm`.
@@ -33,7 +36,10 @@ the service until the pin moves.
    `$PARAMETER(<service>,<KEY>)` in the same commit, moved to `secrets` if it sits in `env`, its
    block given `"PARAMETERS": true`, and its own pins brought under rules 1 and 2; otherwise 0.6.2
    refuses its deploy. **A key read by a `$PUBLIC_KEY` is not converted at all.**
-4. **Slots.** A slot that deploys the service needs, in its glue, `slotParametersFrom` and
+4. **The account.** The stage's glue declares `aws.accountId`: 0.6.2 refuses a block with a
+   reference without it, on every stage. A glue file that has none yet gains it before the
+   stage's first converted secret.
+5. **Slots.** A slot that deploys the service needs, in its glue, `slotParametersFrom` and
    `aws.accountId`; its role's permissions released (below); and the tool that deploys the slot
    at 0.6.2. Until then the service cannot be created or redeployed on a slot built from a glue
    that holds the conversion: at 0.6.2 the deploy fails, naming the refusal, and changes nothing;
@@ -44,7 +50,7 @@ the service until the pin moves.
    - A slot's new timer rules are created disabled and stay so until someone enables them. A
      converted secret changes nothing in that, and a slot whose timers are off does not show
      whether a timer function reads its value.
-5. **Its suites** are read for a check that compares the block's key names with a fixed list or
+6. **Its suites** are read for a check that compares the block's key names with a fixed list or
    with the functions' variables. `PARAMETERS` is a key of the glue block and never a variable of
    a function; `PARAMETER_VERSIONS` is a variable of a function and never a key of glue. Such a
    check is made to leave out `PARAMETERS` on glue's side and `PARAMETER_VERSIONS` on the

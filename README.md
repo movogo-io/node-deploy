@@ -60,7 +60,8 @@ Nothing is asked of a service whose glue block holds no parameter reference: it 
 
 - A deploy to a slot reads the parameters of the stage that `slotParametersFrom` names at the
   glue's top level.
-- A slot whose block holds a reference needs `aws.accountId` declared in its glue, and the slot
+- A block that holds a reference needs `aws.accountId` declared in its glue, on every stage. A
+  slot whose block holds one also needs the slot
   runner's permissions to read and decrypt that stage's parameters.
 - The `secret` commands take no slot.
 
@@ -222,6 +223,11 @@ key; a value that is not a string; an unknown `$CAPS` variable. A parameter that
 empty or no `SecureString` fails the deploy with the `deploy secret put` that fixes it; a read
 that AWS refuses says "not allowed", never "missing".
 
+A block that holds a reference is refused, on every stage and before any parameter is read, when
+its glue file declares no `aws.accountId`: without it nothing checks which account the credentials
+would be read from. A block without a reference still deploys with the warning. A stage's glue
+must gain the account id before its first reference.
+
 The deploying identity needs `ssm:GetParameters` on
 `arn:aws:ssm:<region>:<account>:parameter/<stage>/*` and `kms:Decrypt` through the stage key's
 policy, where `deploy secret init` names it with `--deployer`.
@@ -238,7 +244,7 @@ read from `/dev/…`.
 - The value must name a stage that is not a slot. Anything else is refused by every deploy from
   that file. Tools up to 0.6.1 do not read the key, so it can be added at any time.
 - A slot whose block holds a reference is refused before any parameter is read when the glue has
-  no `slotParametersFrom`, and when it declares no `aws.accountId`.
+  no `slotParametersFrom`.
 - The slot's role needs `ssm:GetParameters` on that stage's parameters and a place in the stage
   key's policy, where `deploy secret init` names it with `--slot-reader`. It needs no write, and
   a parameter is put from a session with the stage's own credentials, not a slot's.
@@ -270,6 +276,10 @@ They keep a stage's credentials in the parameter store. No command prints a valu
 | `check <stage> [<service>]` | One line for each key of a function that is not current: function, key, `deployed v<n>`, `current v<m>`, and `stale`, `not deployed since the reference` or `parameter missing`. It prints nothing and exits 0 when all is current, and exits 1 otherwise. The cure is a deploy. |
 | `restore <stage> <service> <KEY> <version>` | Puts an earlier version's value as the newest version. |
 | `rm <stage> <service> <KEY> [--yes]` | Deletes a parameter with all its versions. It refuses one the glue refers to, and without `--yes` only says how many versions would go. |
+
+**A known limit.** The commands check the account, not that the glue file belongs to the stage
+named: `deploy secret list staging --glue glue.dev.json` passes the check when both stages live in
+one account, as a deploy with the wrong glue file does. Name the stage's own glue file.
 
 **`put`, `init` and `init-key` are run by a person, never by an agent session**: a value typed
 into `put` would pass through the session, and the keys are made by one of their administrators.
