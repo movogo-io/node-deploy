@@ -1,0 +1,20 @@
+{
+  "slotParametersFrom": "dev",
+  "aws": { "accountId": "328342419074", "slots": ["w9"] },
+  "implementations": {
+    "@movogo-io/service": {
+      "implementation": "@movogo-io/aws-host",
+      "version": "0.5.1"
+    }
+  },
+  "services": {
+    "param-user": {
+      "secrets": {
+        "PARAMETERS": true,
+        "PROOF_VALUE": "$PARAMETER()",
+        "PROOF_LITERAL": "$PARAMETER()"
+      }
+    },
+    "param-other": {}
+  }
+}
