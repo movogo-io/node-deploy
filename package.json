@@ -23,10 +23,12 @@
   },
   "files": [
     "*.js",
+    "RUNBOOK.md",
     "bin/*.js",
     "lib/*.js",
     "lib/aws/*.js",
-    "lib/aws/services/*.js"
+    "lib/aws/services/*.js",
+    "lib/secret/*.js"
   ],
   "bin": {
     "deploy": "bin/index.js",

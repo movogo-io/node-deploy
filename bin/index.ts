@@ -2,8 +2,10 @@
 
 import { deploy, destroy } from '../index.js'
 import { localAwsEnv } from '../lib/aws/lite.js'
-import { parseArguments, usage } from '../lib/arguments.js'
+import { parseArguments, secretUsage, usage } from '../lib/arguments.js'
 import { GlueFileError } from '../lib/glue.js'
+import { runSecret } from '../lib/secret/cli.js'
+import { readValue } from '../lib/secret/value.js'
 
 const log = {
     trace: (message: string) => {
@@ -18,6 +20,19 @@ const log = {
 }
 
 const args = parsed()
+if (args.command === 'secret') {
+    // Its own exit codes, 0, 1 or 3, where a deploy's failure below is always 1. What it traces
+    // goes to stderr: the lines of list and check are its output, for a script to read.
+    process.exit(
+        await runSecret(args, {
+            out: line => {
+                console.log(line)
+            },
+            log: { ...log, trace: log.error },
+            readValue,
+        }),
+    )
+}
 try {
     if (args.command === 'destroy') {
         await destroy({ env: await localAwsEnv(undefined, args.stage), log }, args.stage, {
@@ -97,8 +112,8 @@ async function deployService({
 
 function parsed() {
     const command = parseOrExit()
-    if (command.command === 'help') {
-        console.log(usage)
+    if (command.command === 'help' || command.command === 'secret-help') {
+        console.log(command.command === 'help' ? usage : secretUsage)
         process.exit(0)
     }
     return command

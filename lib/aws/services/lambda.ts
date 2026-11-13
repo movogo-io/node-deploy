@@ -4,8 +4,23 @@ import JSZip from 'jszip'
 import { createHash } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
 import { compare } from '../diff.js'
-import { type Context, awsRequest, retry, retryConflict } from '../lite.js'
+import { type Context, awsRequest, retry, retryConflict, withoutBody } from '../lite.js'
 import type { Layers } from './layers.js'
+
+const environmentBytesMax = 4096
+
+/**
+Lambda holds 4 KB of environment for a function, and its refusal of more can quote the variables
+back. So the size is settled here, before anything is written, and only the size is said.
+*/
+export function checkEnvironmentSize(service: string, environment: { [key: string]: string }) {
+    const bytes = Buffer.byteLength(JSON.stringify(environment), 'utf-8')
+    if (environmentBytesMax < bytes) {
+        throw new Error(
+            `The environment of ${service} is ${bytes} bytes; a function holds ${environmentBytesMax} at most. Nothing was changed.`,
+        )
+    }
+}
 
 export async function syncLambda(
     context: Context,
@@ -141,8 +156,8 @@ export type AwsFunction = {
     State: null
     StateReason: null
     Environment?: {
-        Variables: { [key: string]: string }
-        Error: null
+        Variables?: { [key: string]: string } | null
+        Error?: { ErrorCode: string; Message: string } | null
     }
     EphemeralStorage: {
         Size: number
@@ -293,7 +308,14 @@ function withPrefix(functions: AwsFunction[], fnPrefix: string) {
     return functions.filter(fn => fn.FunctionName.toLowerCase().startsWith(fnPrefix))
 }
 
+// An environment AWS could not decrypt reads as no variables at all: taken as such, a deploy
+// would generate new values over the ones the function holds, and a check would find nothing.
 function asLite(fn: AwsFunction, fnPrefix: string): AwsFunctionLite {
+    if (fn.Environment?.Error) {
+        throw new Error(
+            `Function ${fn.FunctionName}: environment unreadable (${fn.Environment.Error.ErrorCode})`,
+        )
+    }
     return {
         id: fn.FunctionArn,
         name: fn.FunctionName.slice(fnPrefix.length),
@@ -336,28 +358,27 @@ async function createLambda(
         throw new Error('No code')
     }
     context.log.trace(`creating lambda ${name} (${code.size})`)
-    const response = await jsonResponse<{ FunctionArn: string }>(
-        retry(
-            context.log,
-            () =>
-                awsRequest(context, 'POST', 'lambda', '/2015-03-31/functions', {
-                    FunctionName: `${prefix}-${service}-${name}`,
-                    Code: { ZipFile: code.zipped },
-                    PackageType: 'Zip',
-                    Architectures: lambdaArchitecture(target),
-                    ...lambdaConfig(target, role, environment, layers),
-                    Tags: {
-                        framework: 'riddance',
-                        environment: prefix,
-                        service,
-                        revision,
-                    },
-                }),
-            r => (r.status === 400 ? 25 : undefined),
-        ),
+    const response = await withoutBody(
+        context.log,
+        () =>
+            awsRequest(context, 'POST', 'lambda', '/2015-03-31/functions', {
+                FunctionName: `${prefix}-${service}-${name}`,
+                Code: { ZipFile: code.zipped },
+                PackageType: 'Zip',
+                Architectures: lambdaArchitecture(target),
+                ...lambdaConfig(target, role, environment, layers),
+                Tags: {
+                    framework: 'riddance',
+                    environment: prefix,
+                    service,
+                    revision,
+                },
+            }),
         'Error creating lambda ' + name,
+        status => (status === 400 ? 25 : 0),
     )
-    return { name, id: response.FunctionArn }
+    const { FunctionArn: id } = (await response.json()) as { FunctionArn: string }
+    return { name, id }
 }
 
 async function updateLambda(
@@ -447,18 +468,21 @@ async function updateConfig(
         return
     }
     context.log.trace('updating config for lambda ' + name)
-    await retryConflict(() =>
-        okResponse(
-            awsRequest(
-                context,
-                'PUT',
-                'lambda',
-                `/2015-03-31/functions/${functionName}/configuration`,
-                awsConfig,
-            ),
+    await retryConflict(async () => {
+        const response = await withoutBody(
+            context.log,
+            () =>
+                awsRequest(
+                    context,
+                    'PUT',
+                    'lambda',
+                    `/2015-03-31/functions/${functionName}/configuration`,
+                    awsConfig,
+                ),
             'Error updating config for lambda ' + name,
-        ),
-    )
+        )
+        await response.arrayBuffer()
+    })
 }
 
 async function deleteLambda(context: Context, prefix: string, service: string, name: string) {

@@ -202,6 +202,132 @@ function jsonErrorCode(body: unknown) {
     return undefined
 }
 
+/**
+A failed call of the parameter store or of KMS. It names the operation, AWS's error code and the
+parameters or keys the call was about, and nothing else: a request or a response body can hold a
+secret value, and AWS's message can quote one, so none of the three is attached, logged or kept.
+*/
+export class AwsError extends Error {
+    name = 'AwsError'
+    readonly service: string
+    readonly operation: string
+    readonly code: string
+    readonly names: string[]
+
+    constructor({
+        service,
+        operation,
+        code,
+        names,
+    }: {
+        service: string
+        operation: string
+        code: string
+        names: string[]
+    }) {
+        super(
+            `${service} ${operation} failed: ${code}${names.length === 0 ? '' : ` (${names.join(', ')})`}`,
+        )
+        this.service = service
+        this.operation = operation
+        this.code = code
+        this.names = names
+    }
+}
+
+const jsonTargets = { ssm: 'AmazonSSM', kms: 'TrentService' }
+
+const retryAttemptsMax = 5
+const retryDelayMs = 500
+
+/**
+The JSON protocol of SSM and KMS. A throttle is ridden out by awsRequest beneath, so it is not
+retried here again: stacked, the two loops would multiply. `names` are what an error may say the
+call was about, never a value.
+*/
+
+export async function awsJson<T>(
+    context: Context,
+    service: keyof typeof jsonTargets,
+    operation: string,
+    body: { [key: string]: unknown },
+    { names, delayMs = retryDelayMs }: { names: string[]; delayMs?: number },
+): Promise<T> {
+    for (let retries = 0; ; ++retries) {
+        const response = await awsRequest(
+            context,
+            'POST',
+            service,
+            '/',
+            body,
+            `${jsonTargets[service]}.${operation}`,
+            'application/x-amz-json-1.1',
+        )
+        const text = await response.text()
+        if (response.ok) {
+            return parsedAnswer<T>(text, { service, operation, names })
+        }
+        const code = errorCode(text) ?? `HTTP ${response.status}`
+        if (
+            // A put that failed may have succeeded: retried, it would answer that the name
+            // exists, or make a second version.
+            operation !== 'PutParameter' &&
+            retries < retryAttemptsMax &&
+            (response.status >= 500 || code.endsWith('TooManyUpdates'))
+        ) {
+            context.log.trace(`retrying #${retries + 1} (${code})`)
+            await setTimeout(delayMs * 2 ** retries + Math.round(Math.random() * delayMs))
+            continue
+        }
+        throw new AwsError({ service, operation, code, names })
+    }
+}
+
+// A SyntaxError quotes the start of what it could not parse, which here may be a value.
+// eslint-disable-next-line @typescript-eslint/no-unnecessary-type-parameters
+function parsedAnswer<T>(
+    text: string,
+    call: { service: string; operation: string; names: string[] },
+): T {
+    try {
+        return (text ? JSON.parse(text) : {}) as T
+    } catch (e) {
+        if (e instanceof SyntaxError) {
+            throw new AwsError({ ...call, code: 'UnreadableAnswer' })
+        }
+        throw e
+    }
+}
+
+/**
+For a request whose body carries a function's environment, credentials among it: Lambda can quote
+the request in the error it answers, so a failure keeps the status and the error's type and
+nothing of the body, in the trace and in what is thrown. The status is where retryConflict and
+its like look for it.
+*/
+export async function withoutBody(
+    log: Context['log'],
+    request: () => Promise<Response>,
+    message: string,
+    retriesMax: (status: number) => number = () => 0,
+) {
+    for (let retries = 0; ; ++retries) {
+        const response = await request()
+        if (response.ok) {
+            return response
+        }
+        const type =
+            response.headers.get('x-amzn-errortype')?.split(':', 1)[0] ??
+            errorCode(await response.text())
+        if (retries < retriesMax(response.status)) {
+            log.trace(`  retrying #${retries + 1}... (${response.status} ${type ?? 'no type'})`)
+            await setTimeout(500)
+            continue
+        }
+        throw Object.assign(new Error(message), { response: { status: response.status, type } })
+    }
+}
+
 // eslint-disable-next-line @typescript-eslint/no-unnecessary-type-parameters
 export async function* pages<T, S>(
     context: Context,

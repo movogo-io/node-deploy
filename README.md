@@ -6,10 +6,68 @@ its dependencies into a single `index.js`.
 ```sh
 deploy [<path>] <stage> [<glue file>] [--stage-dir <dir>]
 deploy destroy <stage> --glue <file> [--service <name>] [--dry-run]
+deploy secret <command> <stage> [<service> [<KEY> [<version>]]] --glue <file> [flags]
 deploy --help
 ```
 
 `<path>` defaults to the current directory and the glue file to `../glue/glue.json` beside it.
+
+## Upgrading from 0.6.1
+
+**Before your first deploy**
+
+Nothing is asked of a service whose glue block holds no parameter reference: it deploys as with
+0.6.1 and needs no new permission.
+
+**Credentials from the parameter store**
+
+- A value of `secrets` can be a reference to a parameter: `"$PARAMETER()"` or
+  `"$PARAMETER(<service>,<KEY>)"`. It is legal in `secrets` only and is the whole value. See
+  [Credentials from the parameter store](#credentials-from-the-parameter-store).
+- Every `secrets` block that holds a reference also holds `"PARAMETERS": true`.
+- A function of such a service gets one more variable, `PARAMETER_VERSIONS`, with the versions
+  of the parameters the deploy read.
+- The deploying identity then needs `ssm:GetParameters` on `/<stage>/*` and a place in the
+  `Deployers` statement of the stage key's policy.
+- The `secret` commands put, list and check the parameters; see
+  [The secret commands](#the-secret-commands).
+
+**What 0.6.2 refuses that 0.6.1 deployed**
+
+- An unknown `$CAPS` variable in any value of `env` or `secrets`: a `$` followed by capitals or
+  underscores that is none of the tool's variables. 0.6.1 deployed such text as it stood.
+- A value of `env` or `secrets` that is not a string. 0.6.1 ended on a `TypeError`; 0.6.2 names
+  the key.
+- The keys `PARAMETERS` and `PARAMETER_VERSIONS` used as variables.
+- A top-level `slotParametersFrom` that names no stage, or names a slot.
+- A function whose environment cannot be read. It is now fatal; before, it was read as a
+  function with no variables.
+- A service whose environment is over 4,096 bytes as JSON, before anything is written. Before,
+  Lambda refused it at the first function.
+- `secret` as the first argument, which is now a command. A directory of that name is deployed
+  as `./secret`.
+
+**Older versions and a block with references**
+
+- A tool below 0.6.2 stops on `"PARAMETERS": true` with
+  `TypeError: value.matchAll is not a function` and changes nothing. Move its pin to 0.6.2.
+- 0.6.0 and older may print nothing and exit 0 when they stop there, so a deploy without a
+  `done.` line did not happen.
+- A block with a reference and without the entry must never be committed: an older tool would
+  deploy the reference's text as the credential. 0.6.2 refuses such a block.
+
+**Slots**
+
+- A deploy to a slot reads the parameters of the stage that `slotParametersFrom` names at the
+  glue's top level.
+- A slot whose block holds a reference needs `aws.accountId` declared in its glue, and the slot
+  runner's permissions to read and decrypt that stage's parameters.
+- The `secret` commands take no slot.
+
+**Exit codes**
+
+- A deploy, a `destroy` and a `publish-layer` exit 1 on every failure, as in 0.6.1.
+- A `secret` command exits 0, 1 or 3; see [The secret commands](#the-secret-commands).
 
 ## Upgrading from 0.6.0
 
@@ -111,9 +169,131 @@ A glue file is per stage. `aws` at its top level holds two settings:
 
 Any other key in that object is refused.
 
-A deploy to a slot differs from a deploy to any other stage in two ways: it creates a new
-[timer rule](#timer-rules) disabled, and it reserves
-[no concurrency](#per-function-settings-in-the-glue).
+A deploy to a slot differs from a deploy to any other stage in three ways: it creates a new
+[timer rule](#timer-rules) disabled, it reserves
+[no concurrency](#per-function-settings-in-the-glue), and it reads the
+[parameters of the stage its glue names](#what-a-slot-reads).
+
+## Credentials from the parameter store
+
+```json
+{
+  "aws": { "accountId": "123456789012", "slots": ["w1"] },
+  "slotParametersFrom": "dev",
+  "services": {
+    "slack": {
+      "secrets": {
+        "PARAMETERS": true,
+        "SLACK_SIGNING_SECRET": "$PARAMETER()",
+        "MAILGUN_API_PASSWORD": "$PARAMETER(mails,MAILGUN_API_PASSWORD)"
+      }
+    }
+  }
+}
+```
+
+A value of `secrets` can refer to a `SecureString` parameter of the stage instead of holding the
+credential. At deploy the tool fetches the value and puts it into the functions' environment.
+
+- **`$PARAMETER()`** is the parameter `/<stage>/<service>/<KEY>`: the service being deployed and
+  the key's own name.
+- **`$PARAMETER(<service>,<KEY>)`** is `/<stage>/<service>/<KEY>` of the service named, for a
+  credential two services share. It is written without a space, as `$SAME_AS(<service>,<KEY>)`
+  is. `<KEY>` holds letters, digits and `_` and does not start with a digit.
+- A reference is the whole value and is legal in `secrets` only. A credential is one parameter
+  with one version.
+- **`"PARAMETERS": true`**, the JSON boolean, stands in every `secrets` block that holds a
+  reference. It never becomes a variable of a function. It is there for older tools: a tool below
+  0.6.2 stops on it and changes nothing, where it would otherwise deploy the reference's text as
+  the credential. A block may hold the entry without a reference, so it can be committed first.
+- **`PARAMETER_VERSIONS`** is one more variable of the function: JSON of the version read for
+  each key that is a reference, such as `{"SLACK_SIGNING_SECRET":3}`. `deploy secret check`
+  compares it with the parameters as they stand.
+- `$SAME_AS` and `$PUBLIC_KEY` on a reference of the service's own block give the fetched value
+  and its public key. On a reference of another service's block they are refused: the copy would
+  carry no version. Write `$PARAMETER(<service>,<KEY>)` instead. A key that another service
+  reads with `$PUBLIC_KEY` cannot become a reference.
+
+A deploy checks the block of the service it deploys, and no other, before it builds or changes
+anything. It refuses, naming the key and never showing a value: `$PARAMETER` in `env`; a value of
+`secrets` that holds `$PARAMETER` and is not exactly one of the two forms; a reference without
+`"PARAMETERS": true`; `PARAMETERS` anywhere else or with another value; `PARAMETER_VERSIONS` as a
+key; a value that is not a string; an unknown `$CAPS` variable. A parameter that is missing,
+empty or no `SecureString` fails the deploy with the `deploy secret put` that fixes it; a read
+that AWS refuses says "not allowed", never "missing".
+
+The deploying identity needs `ssm:GetParameters` on
+`arn:aws:ssm:<region>:<account>:parameter/<stage>/*` and `kms:Decrypt` through the stage key's
+policy, where `deploy secret init` names it with `--deployer`.
+
+### What a slot reads
+
+A slot (`w1` to `w9`) has no parameters and no key of its own. A deploy to a slot reads the
+parameters of the stage that **`slotParametersFrom`** names, at the top level of the glue file
+beside `aws` and `services`: with `"slotParametersFrom": "dev"`, a reference deployed to `w1` is
+read from `/dev/…`.
+
+- Only parameter names are mapped. Function names, `$SAME_AS` lookups, base URLs and generated
+  values keep the slot's own name.
+- The value must name a stage that is not a slot. Anything else is refused by every deploy from
+  that file. Tools up to 0.6.1 do not read the key, so it can be added at any time.
+- A slot whose block holds a reference is refused before any parameter is read when the glue has
+  no `slotParametersFrom`, and when it declares no `aws.accountId`.
+- The slot's role needs `ssm:GetParameters` on that stage's parameters and a place in the stage
+  key's policy, where `deploy secret init` names it with `--slot-reader`. It needs no write, and
+  a parameter is put from a session with the stage's own credentials, not a slot's.
+- A slot without a reference in its block deploys as before.
+
+## The secret commands
+
+```sh
+deploy secret <command> <stage> [<service> [<KEY> [<version>]]] --glue <file> [flags]
+deploy secret --help
+```
+
+They keep a stage's credentials in the parameter store. No command prints a value.
+
+- `--glue <file>` is required for every command; none guesses a file. The file must declare
+  `aws.accountId`, and each command first checks that its credentials reach that account.
+  Credentials are found as for a deploy.
+- `<stage>` is never a slot: every command refuses `w1` to `w9`.
+- `PARAMETERS` is the entry that marks a block with references and no key: `put`, `import`,
+  `restore` and `rm` refuse it.
+
+| Command | What it does |
+|---|---|
+| `init <stage> --admin <arn>… --operator <arn>… --deployer <arn>… [--slot-reader <arn>…] [--key <id>] [--update-policy]` | Makes the stage's key, `alias/<stage>-secrets`, or compares its policy with the one the flags give. It needs at least two `--admin`, and the caller must be one of them. A policy that differs is refused unless `--update-policy`. `--key <id>` resumes with a key that was made without its alias. |
+| `init-key <stage> <service> <name> [--key <id>] [--update-policy]` | Makes `alias/<stage>-<service>-<name>`, a key only that service's functions may use, and prints its ARN for the service's `env`. The caller must be an administrator of the stage key, and the service must have been deployed once. A caller sends the encryption context `{ "service": "<service>", "record": "<the record's id>" }`. |
+| `put <stage> <service> <KEY> [--replace] [--multiline]` | Puts a value as `/<stage>/<service>/<KEY>`, which the glue must refer to. The value is never an argument: it is typed without echo, or read from standard input less one trailing line break. An empty value, one over 4,096 bytes, a typed one with a control character and, without `--multiline`, one with a line break are refused. An existing name needs `--replace`. It ends with the services to redeploy. |
+| `import <stage> <service> <KEY>` | Copies the value the service's functions hold into the parameter and prints the version. It needs no reference in the glue, so the value can be in place before the glue changes. It refuses functions that hold different values, and a parameter that already holds another value. |
+| `list <stage> [<service>]` | One line a parameter, fields separated by a tab: name, `v<version>`, the last change, who made it, and `unreferenced`, `missing`, `not SecureString`, `other key` or `-`. |
+| `check <stage> [<service>]` | One line for each key of a function that is not current: function, key, `deployed v<n>`, `current v<m>`, and `stale`, `not deployed since the reference` or `parameter missing`. It prints nothing and exits 0 when all is current, and exits 1 otherwise. The cure is a deploy. |
+| `restore <stage> <service> <KEY> <version>` | Puts an earlier version's value as the newest version. |
+| `rm <stage> <service> <KEY> [--yes]` | Deletes a parameter with all its versions. It refuses one the glue refers to, and without `--yes` only says how many versions would go. |
+
+**`put`, `init` and `init-key` are run by a person, never by an agent session**: a value typed
+into `put` would pass through the session, and the keys are made by one of their administrators.
+
+**Exit codes.** 0: done, and `check` found nothing. 1: wrong usage, a refusal, or `check` found
+something. 3: an AWS error, or anything unexpected. The line is whether AWS was asked: what is
+found wrong on this machine is 1, a missing profile and expired credentials included; what AWS
+refuses is 3. A refusal and an AWS error print one line, `error: …`. A script can so tell "`check`
+found something" from "`check` could not run".
+
+**Keys.** All use of a key is granted in its key policy. Neither policy has a statement for the
+plain account principal, so no IAM policy can add use or management of a key. Lock-out is covered
+by at least two administrators and a statement confined to the account's root user. Key material
+is not rotated automatically; an administrator can turn that on. A role that is deleted and
+created again is locked out of a key that names it until `init` or `init-key` is rerun with
+`--update-policy`. `init` adopts an alias that already exists, and a key given with `--key`, as it
+is: it compares the key's policy and nothing else of it. `init` refuses a principal of another
+account than the stage's. The order of adoption, and what each message means, is in
+[RUNBOOK.md](RUNBOOK.md).
+
+**Permissions.** An administrator needs `kms:CreateKey`, `kms:CreateAlias` on
+`alias/<stage>-*` and `iam:GetRole`. An operator needs `ssm:PutParameter`, `ssm:GetParameter`,
+`ssm:GetParameters` and `ssm:DeleteParameter` on the stage's parameters,
+`ssm:DescribeParameters`, and `lambda:ListFunctions` for `import` and `check`.
 
 ## The build directory
 

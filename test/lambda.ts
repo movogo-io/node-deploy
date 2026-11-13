@@ -1,10 +1,13 @@
 /* eslint-disable unicorn/no-global-object-property-assignment */
 // spell-checker: ignore AKIDEXAMPLE
 import assert from 'node:assert/strict'
+import { inspect } from 'node:util'
+import { thrownBy } from './lib/aws.js'
 import {
     getFunctions,
     listAccountFunctions,
     memorySize,
+    checkEnvironmentSize,
     selectOwnFunctions,
     syncLambda,
 } from '../lib/aws/services/lambda.js'
@@ -307,6 +310,36 @@ describe('function layers', () => {
         ])
     })
 
+    it('keeps what Lambda answers a refused configuration with out of the error', async () => {
+        answer([
+            Response.json(
+                { Type: 'User', message: 'too large: {"TOKEN":"throwaway"}' },
+                { status: 400, headers: { 'x-amzn-errortype': 'InvalidParameterValueException' } },
+            ),
+        ])
+
+        const error = await thrownBy(() =>
+            syncLambda(
+                context,
+                'staging',
+                [{ ...deployed, layers: [] }],
+                reflection,
+                { TOKEN: 'throwaway' },
+                'arn:role',
+                code,
+                { render: [chromium] },
+            ),
+        )
+
+        assert.deepStrictEqual(
+            [
+                Error.isError(error) && 'response' in error ? error.response : undefined,
+                inspect(error, { depth: 10, showHidden: true }).includes('throwaway'),
+            ],
+            [{ status: 400, type: 'InvalidParameterValueException' }, false],
+        )
+    })
+
     it('updates the code before removing the layers the glue no longer names', async () => {
         answer([Response.json({}), Response.json({})])
 
@@ -494,5 +527,23 @@ describe('function fan-out', () => {
         })
 
         assert.deepStrictEqual(updated.length, 8)
+    })
+})
+
+describe('a function’s environment', () => {
+    it('is refused over 4 KB before anything is written, by its size alone', () => {
+        checkEnvironmentSize('svc', { A: 'a'.repeat(4096 - '{"A":""}'.length) })
+        assert.throws(
+            () => {
+                checkEnvironmentSize('svc', {
+                    TOKEN: 'throwaway',
+                    A: 'é'.repeat(2048),
+                })
+            },
+            {
+                message:
+                    'The environment of svc is 4124 bytes; a function holds 4096 at most. Nothing was changed.',
+            },
+        )
     })
 })

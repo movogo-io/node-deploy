@@ -72,3 +72,23 @@ function parametersOf(url: URL, contentType: string, body: string): { [key: stri
 function actionOf(parameters: { [key: string]: unknown }) {
     return typeof parameters.Action === 'string' ? parameters.Action : undefined
 }
+
+/**
+A context whose trace and warning lines are kept, for a test that says what may not be in them.
+*/
+export function recording() {
+    const lines: string[] = []
+    const record = (line: string) => {
+        lines.push(line)
+    }
+    return { lines, context: { ...context, log: { trace: record, warn: record } } }
+}
+
+export async function thrownBy(run: () => Promise<unknown>): Promise<unknown> {
+    try {
+        await run()
+    } catch (e) {
+        return e
+    }
+    return undefined
+}

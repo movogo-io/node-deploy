@@ -1,16 +1,43 @@
 import { createPublicKey, generateKeyPairSync, randomBytes } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
+import { isServiceName } from './aws/destroy.js'
+import { AwsError } from './aws/lite.js'
 
 export type Resolver = {
     getEnvironment(prefix: string, service: string): Promise<{ [key: string]: string }>
     getBaseUrl(prefix: string, service: string): Promise<string | undefined>
+    /**
+    The parameters of those names that hold a credential: a name that is not there, an empty
+    value and a parameter that is no SecureString are left out, and are missing to the caller.
+    */
+    getParameters(names: string[]): Promise<{ name: string; value: string; version: number }[]>
 }
 
-export async function getGlue(path: string, prefix: string, resolver: Resolver, gluePath?: string) {
+/**
+What resolving one service's block needs of its glue file beyond the block: the file's name for
+the messages, the other blocks for the one question asked of them, the stage a slot reads
+parameters of, and the account the file declares.
+*/
+export type GlueFile = {
+    file: string
+    services: { [service: string]: unknown }
+    slotParametersFrom: unknown
+    accountId: string | undefined
+    warn: (message: string) => void
+}
+
+export async function getGlue(
+    path: string,
+    prefix: string,
+    resolver: Resolver,
+    gluePath: string | undefined,
+    log: { warn: (message: string) => void },
+) {
+    const file = glueFilePath(path, gluePath)
     const [packageJson, glueJson] = await Promise.all([
         readFile(join(path, 'package.json'), 'utf-8'),
-        readGlueFile(glueFilePath(path, gluePath)),
+        readGlueFile(file),
     ])
     const { name: service } = JSON.parse(packageJson) as { name: string }
     const glue = glueJson as {
@@ -18,13 +45,14 @@ export async function getGlue(path: string, prefix: string, resolver: Resolver, 
         websites: {
             [key: string]: string[]
         }
+        slotParametersFrom?: unknown
         services: {
             [key: string]: {
                 implementations: Implementations
                 publish?: string[]
                 cors?: string
-                env: { [key: string]: string }
-                secrets: { [key: string]: string }
+                env: { [key: string]: unknown }
+                secrets: { [key: string]: unknown }
                 [provider: string]: unknown
             }
         }
@@ -32,6 +60,18 @@ export async function getGlue(path: string, prefix: string, resolver: Resolver, 
 
     const { publish, cors, env, secrets, implementations, ...provider } =
         glue.services[service] ?? {}
+    // Awaited here, and so before the build and any write: the block's refusals and the
+    // parameters' fetch. What is left waits on the account's function listing, half a minute
+    // long, and stays a promise beside the build.
+    const prepared = await prepareEnv(env ?? {}, secrets ?? {}, prefix, service, resolver, {
+        file,
+        services: glue.services,
+        slotParametersFrom: glue.slotParametersFrom,
+        accountId: declaredAwsOf(glueJson, file).accountId,
+        warn: message => {
+            log.warn(message)
+        },
+    })
     return {
         service,
         implementations: {
@@ -40,7 +80,7 @@ export async function getGlue(path: string, prefix: string, resolver: Resolver, 
         },
         publishTopics: publish ?? [],
         corsSites: cors ? (glue.websites[cors] ?? []) : [],
-        env: resolveEnv(env ?? {}, secrets ?? {}, prefix, service, resolver),
+        env: expandEnv(prepared),
         ...provider,
     }
 }
@@ -57,7 +97,7 @@ export class GlueFileError extends Error {
     name = 'GlueFileError'
 }
 
-async function readGlueFile(glueFile: string): Promise<unknown> {
+export async function readGlueFile(glueFile: string): Promise<unknown> {
     try {
         return JSON.parse(await readFile(glueFile, 'utf-8'))
     } catch (e) {
@@ -75,7 +115,10 @@ that account may hold. A key the tool does not know is refused: `accountID` or `
 otherwise read as no account declared, and the check the author asked for would silently not run.
 */
 export async function declaredAws(glueFile: string) {
-    const glue = await readGlueFile(glueFile)
+    return declaredAwsOf(await readGlueFile(glueFile), glueFile)
+}
+
+function declaredAwsOf(glue: unknown, glueFile: string) {
     if (glue === null || typeof glue !== 'object' || !('aws' in glue)) {
         return { accountId: undefined, slots: [] }
     }
@@ -98,6 +141,21 @@ Slots are named literally. A pattern would sooner or later match something else:
 */
 export function isSlot(stage: string) {
     return /^w[1-9]$/u.test(stage)
+}
+
+/**
+The stage whose parameters a deploy to `stage` reads: its own, or for a slot the one its glue
+names. Nothing else of a slot is mapped: function names, lookups and generated values keep the
+slot's own name.
+*/
+export function parameterStage(stage: string, from: string) {
+    return isSlot(stage) ? from : stage
+}
+
+// The stage starts the name of everything a deploy makes, so an empty one, a path given in its
+// place or a separator in it would name resources under no stage or under another one's prefix.
+export function isStageName(stage: string) {
+    return /^[A-Za-z0-9][A-Za-z0-9_-]*$/u.test(stage)
 }
 
 const topLevelAwsKeys = ['accountId', 'slots']
@@ -238,21 +296,14 @@ const variables: Variable[] = [
         pattern: /\$PUBLIC_KEY\(([^,]+),([^)]+)\)/gu,
         source: match => ({ environment: match[1] }),
         value: (_prefix, _service, [, service, key], _key, env) =>
-            createPublicKey(
-                `-----BEGIN EC PRIVATE KEY-----\n${
-                    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-                    env[service!]?.[key!] ??
+            publicKeyOf(
+                // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+                env[service!]?.[key!] ??
                     variableError(
                         // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
                         `Private key for ${service!} not found. Has it been deployed?`,
-                    )
-                }\n-----END EC PRIVATE KEY-----\n`,
-            )
-                .export({ type: 'spki', format: 'pem' })
-                .toString()
-                .split('\n')
-                .slice(1, -2)
-                .join(''),
+                    ),
+            ),
     },
     {
         pattern: /\$BASE_URL\(([^)]+)\)/gu,
@@ -269,17 +320,399 @@ function variableError(message: string): never {
     throw new Error(message)
 }
 
-async function resolveEnv(
-    clear: { [key: string]: string },
-    secrets: { [key: string]: string },
+function publicKeyOf(privateKey: string) {
+    return createPublicKey(
+        `-----BEGIN EC PRIVATE KEY-----\n${privateKey}\n-----END EC PRIVATE KEY-----\n`,
+    )
+        .export({ type: 'spki', format: 'pem' })
+        .toString()
+        .split('\n')
+        .slice(1, -2)
+        .join('')
+}
+
+/**
+A reference to a parameter is the whole value, `$PARAMETER()` or `$PARAMETER(<service>,<KEY>)`.
+It is not one of `variables`, which are replaced wherever they occur, in a deployed value too: a
+reference is recognized once, on the glue text.
+*/
+export const parameterReference = /^\$PARAMETER\((?:([^,()]+),([^,()]+))?\)$/u
+
+export function referenceOf(
+    value: string,
+): undefined | { own: true } | { own?: undefined; service: string; key: string } {
+    const match = parameterReference.exec(value)
+    if (!match) {
+        return undefined
+    }
+    const [, service, key] = match
+    if (service === undefined || key === undefined) {
+        return { own: true }
+    }
+    if (!isServiceName(service) || !isKeyName(key)) {
+        return undefined
+    }
+    return { service, key }
+}
+
+export function isKeyName(key: string) {
+    return /^[A-Za-z_][A-Za-z0-9_]*$/u.test(key)
+}
+
+export function parameterName(stage: string, service: string, key: string) {
+    return `/${stage}/${service}/${key}`
+}
+
+const tripwire = 'PARAMETERS'
+const versionsKey = 'PARAMETER_VERSIONS'
+const copy = /\$(SAME_AS|PUBLIC_KEY)\(([^,]+),([^)]+)\)/gu
+
+type Block = 'env' | 'secrets'
+
+type Prepared = {
+    prefix: string
+    service: string
+    resolver: Resolver
+    glue: GlueFile
+    texts: { [key: string]: string }
+    blocks: { [key: string]: Block }
+    fetched: { [key: string]: string }
+    versions: { [key: string]: number }
+}
+
+export async function resolveEnv(
+    clear: { [key: string]: unknown },
+    secrets: { [key: string]: unknown },
     prefix: string,
     service: string,
     resolver: Resolver,
+    glue: GlueFile,
 ) {
-    const env = {
-        ...clear,
-        ...secrets,
+    return await expandEnv(await prepareEnv(clear, secrets, prefix, service, resolver, glue))
+}
+
+/**
+What is settled before a deploy builds or writes anything: the block's refusals, none of which
+shows a value, and the parameters the block refers to. No value fetched here is handed to the
+passes that expand variables: a credential may hold any text, a variable's among them.
+*/
+async function prepareEnv(
+    clear: { [key: string]: unknown },
+    secrets: { [key: string]: unknown },
+    prefix: string,
+    service: string,
+    resolver: Resolver,
+    glue: GlueFile,
+): Promise<Prepared> {
+    const entries = checkedBlock(clear, secrets, service)
+    for (const { block, key, value } of entries) {
+        refuseCopyOfReference(glue.services, service, block, key, value)
     }
+    const from = parametersFrom(glue)
+    const references = entries.flatMap(({ key, value }) => {
+        const reference = referenceOf(value)
+        return reference ? [{ key, reference }] : []
+    })
+    const [first] = references
+    // The service's name is a segment of a parameter's path, as its keys are.
+    if (first && !isServiceName(service)) {
+        throw new Error(
+            `${JSON.stringify(service)}, the name in package.json, cannot name a parameter: ${service}.secrets.${first.key} is a parameter reference.`,
+        )
+    }
+    if (first && isSlot(prefix)) {
+        refuseSlotWithoutSource(glue, from, `${service}.secrets.${first.key}`)
+    }
+    const others = entries.filter(({ value }) => !referenceOf(value))
+    for (const { block, key, value } of others) {
+        const name = unknownVariable(value)
+        if (name !== undefined) {
+            throw new Error(`${service}.${block}.${key}: unknown variable $${name}`)
+        }
+    }
+    const stage = parameterStage(prefix, from ?? prefix)
+    const parameters = await fetchParameters(
+        references.map(({ key, reference }) => ({
+            key,
+            name: reference.own
+                ? parameterName(stage, service, key)
+                : parameterName(stage, reference.service, reference.key),
+        })),
+        prefix,
+        stage,
+        resolver,
+        glue.file,
+    )
+    return {
+        prefix,
+        service,
+        resolver,
+        glue,
+        texts: Object.fromEntries(others.map(({ key, value }) => [key, value])),
+        blocks: Object.fromEntries(entries.map(({ key, block }) => [key, block])),
+        fetched: Object.fromEntries(parameters.map(({ key, value }) => [key, value])),
+        versions: Object.fromEntries(parameters.map(({ key, version }) => [key, version])),
+    }
+}
+
+// The order is the order a reader is told of what is wrong: the reserved name before a value
+// that is no string, since the tripwire is the one value that is none.
+function checkedBlock(
+    clear: { [key: string]: unknown },
+    secrets: { [key: string]: unknown },
+    service: string,
+) {
+    if (Object.hasOwn(clear, tripwire)) {
+        throw new Error(reservedTripwire(service, 'env'))
+    }
+    const guarded = Object.hasOwn(secrets, tripwire)
+    if (guarded && secrets[tripwire] !== true) {
+        throw new Error(reservedTripwire(service, 'secrets'))
+    }
+    const entries = [
+        ...Object.entries(clear).map(([key, value]) => ({ block: 'env' as const, key, value })),
+        ...Object.entries(secrets)
+            .filter(([key]) => key !== tripwire)
+            .map(([key, value]) => ({ block: 'secrets' as const, key, value })),
+    ].map(({ block, key, value }) => {
+        if (typeof value !== 'string') {
+            throw new TypeError(`${service}.${block}.${key} must be a string.`)
+        }
+        return { block, key, value }
+    })
+    const holding = entries.filter(
+        ({ block, value }) => block === 'secrets' && value.includes('$PARAMETER'),
+    )
+    if (!guarded && holding.length !== 0) {
+        throw new Error(
+            `${service}.secrets holds a parameter reference (${holding.map(({ key }) => key).join(', ')}) and no "PARAMETERS": true. Add it to that block: it is what stops a tool older than 0.6.2, which would deploy the reference's text as the credential. Nothing was changed.`,
+        )
+    }
+    for (const { block, key, value } of entries) {
+        if (block === 'env' && value.includes('$PARAMETER')) {
+            throw new Error(
+                `${service}.env.${key} holds $PARAMETER: a parameter reference is written in secrets only.`,
+            )
+        }
+    }
+    for (const { key, value } of holding) {
+        const reference = referenceOf(value)
+        if (!reference) {
+            throw new Error(
+                `${service}.secrets.${key} holds $PARAMETER and is not exactly $PARAMETER() or $PARAMETER(<service>,<KEY>). A reference is the whole value. The value is not shown.`,
+            )
+        }
+        // The key of $PARAMETER() ends the parameter's path.
+        if (reference.own && !isKeyName(key)) {
+            throw new Error(
+                `${service}.secrets.${key} is $PARAMETER() under a key that cannot name a parameter: letters, digits and _ only, not starting with a digit.`,
+            )
+        }
+    }
+    const stamp = entries.find(({ key }) => key === versionsKey)
+    if (stamp) {
+        throw new Error(
+            `${service}.${stamp.block}.${versionsKey} is reserved: the tool writes that variable itself, with the versions of the parameters it read.`,
+        )
+    }
+    return entries
+}
+
+function reservedTripwire(service: string, block: Block) {
+    return `${service}.${block}.${tripwire} is reserved. It is written "PARAMETERS": true, in secrets, and nowhere else.`
+}
+
+// A copy of another service's reference would be a credential with no version stamp, which no
+// check could see go stale. The other block is read for this alone, and as glue wrote it.
+function refuseCopyOfReference(
+    services: { [service: string]: unknown },
+    service: string,
+    block: Block,
+    key: string,
+    value: string,
+) {
+    for (const [, kind, other, copied] of value.matchAll(copy)) {
+        if (other === undefined || copied === undefined || other === service) {
+            continue
+        }
+        const end = referenceBehind(textsOf(services[other]), other, copied, [])
+        if (!end) {
+            continue
+        }
+        if (kind === 'PUBLIC_KEY') {
+            throw new Error(
+                `${service}.${block}.${key} reads ${copied} of ${other} with $PUBLIC_KEY, and ${copied} there is a parameter reference. A public key cannot be derived from a reference in another service's block: ${copied} must stay a value ${other}'s functions hold.`,
+            )
+        }
+        throw new Error(
+            `${service}.${block}.${key} copies ${copied} of ${other} with $SAME_AS, and ${copied} there is a parameter reference (or a copy of one): the copy would carry no version. Write "$PARAMETER(${end.service},${end.key})" in secrets, with "PARAMETERS": true.`,
+        )
+    }
+}
+
+function textsOf(block: unknown): { [key: string]: unknown } {
+    if (block === null || typeof block !== 'object') {
+        return {}
+    }
+    return {
+        ...('env' in block && typeof block.env === 'object' && block.env),
+        ...('secrets' in block && typeof block.secrets === 'object' && block.secrets),
+    }
+}
+
+// Whatever holds $PARAMETER counts as a reference here, well-formed or not: its own deploy says
+// what is wrong with it. `seen` ends a chain of copies that names itself.
+function referenceBehind(
+    texts: { [key: string]: unknown },
+    service: string,
+    key: string,
+    seen: string[],
+): { service: string; key: string } | undefined {
+    const value = texts[key]
+    if (typeof value !== 'string' || seen.includes(key)) {
+        return undefined
+    }
+    if (value.includes('$PARAMETER')) {
+        const reference = referenceOf(value)
+        return reference && !reference.own
+            ? { service: reference.service, key: reference.key }
+            : { service, key }
+    }
+    for (const [, kind, other, copied] of value.matchAll(copy)) {
+        if (kind !== 'SAME_AS' || other !== service || copied === undefined) {
+            continue
+        }
+        const end = referenceBehind(texts, service, copied, [...seen, key])
+        if (end) {
+            return end
+        }
+    }
+    return undefined
+}
+
+function parametersFrom({ slotParametersFrom: from, file }: GlueFile) {
+    if (from === undefined) {
+        return undefined
+    }
+    if (typeof from !== 'string' || !isStageName(from) || isSlot(from)) {
+        throw new Error(
+            `slotParametersFrom in ${file} must name a stage that is not a slot, not ${typeof from === 'string' ? from : JSON.stringify(from)}.`,
+        )
+    }
+    return from
+}
+
+// Without an account the account check only warns, and a slot would read another stage's
+// parameters in whichever account its credentials reach.
+function refuseSlotWithoutSource(
+    { file, accountId }: GlueFile,
+    from: string | undefined,
+    key: string,
+) {
+    if (from === undefined) {
+        throw new Error(
+            `${key} is a parameter reference, and ${file} does not say whose parameters a slot reads. Give it "slotParametersFrom": "<stage>" at the top level. Nothing was changed.`,
+        )
+    }
+    if (accountId === undefined) {
+        throw new Error(
+            `${key} is a parameter reference, and ${file} declares no AWS account: a slot reads another stage's parameters only in the account its glue declares. Give it "aws": { "accountId": "…" }. Nothing was changed.`,
+        )
+    }
+}
+
+// Only the name is answered, never the bracket's content or the text around it: the value may
+// be a secret that happens to hold a dollar sign.
+function unknownVariable(value: string) {
+    const rest = variables.reduce((text, { pattern }) => text.replaceAll(pattern, ' '), value)
+    return /\$([A-Z_]+)(?:\(|(?![A-Za-z0-9_]))/u.exec(rest)?.[1]
+}
+
+async function fetchParameters(
+    references: { key: string; name: string }[],
+    prefix: string,
+    stage: string,
+    resolver: Resolver,
+    glueFile: string,
+) {
+    if (references.length === 0) {
+        return []
+    }
+    const names = [...new Set(references.map(({ name }) => name))]
+    const slot = isSlot(prefix) ? prefix : undefined
+    const parameters = await readParameters(names, slot, resolver)
+    const absent = names.filter(name => parameters.every(parameter => parameter.name !== name))
+    if (absent.length !== 0) {
+        throw new Error(
+            [
+                ...absent.map(
+                    name =>
+                        `Parameter ${name} is missing. Put it: deploy secret put ${name.split('/').slice(1).join(' ')} --glue ${glueFile}`,
+                ),
+                ...(slot === undefined
+                    ? []
+                    : [
+                          `(${slot} reads ${stage}'s parameters. Put it from a session with ${stage}'s own credentials, not a slot's.)`,
+                      ]),
+            ].join('\n'),
+        )
+    }
+    return references.flatMap(({ key, name }) =>
+        parameters
+            .filter(parameter => parameter.name === name)
+            .map(({ value, version }) => ({ key, value, version })),
+    )
+}
+
+// A refused read is never called missing: the parameter may well be there.
+async function readParameters(names: string[], slot: string | undefined, resolver: Resolver) {
+    try {
+        return await resolver.getParameters(names)
+    } catch (e) {
+        if (!(e instanceof AwsError) || e.code !== 'AccessDeniedException') {
+            throw e
+        }
+        throw new Error(
+            [
+                `Not allowed to read or decrypt ${names.join(', ')}: check the deployer's policy and the stage key's Deployers.`,
+                ...(slot === undefined
+                    ? []
+                    : [
+                          `For ${slot}: the slot runner's two policies and the key's SlotReaders (RUNBOOK).`,
+                      ]),
+            ].join('\n'),
+            { cause: e },
+        )
+    }
+}
+
+async function expandEnv({
+    prefix,
+    service,
+    resolver,
+    glue,
+    texts,
+    blocks,
+    fetched,
+    versions,
+}: Prepared): Promise<{ [key: string]: string }> {
+    // A copy of a fetched value is held out of the passes behind a placeholder no pattern
+    // matches, and put in after them: a pattern that comes after $SAME_AS would otherwise
+    // expand what the credential's own text happens to hold.
+    const held: { kind: string; key: string }[] = []
+    const marker = `\u{0}${randomBytes(8).toString('hex')}:`
+    const env = Object.fromEntries(
+        Object.entries(texts).map(([key, value]) => [
+            key,
+            value.replaceAll(copy, (text: string, kind: string, source: string, copied: string) => {
+                if (source !== service || !Object.hasOwn(fetched, copied)) {
+                    return text
+                }
+                held.push({ kind, key: copied })
+                return `${marker}${held.length - 1}\u{0}`
+            }),
+        ]),
+    )
     const referencedEnvironments: string[] = []
     const referencedBaseUrls: string[] = []
     const selfReferencing: { key: string; v: Variable; match: RegExpMatchArray }[] = []
@@ -301,10 +734,11 @@ async function resolveEnv(
             }
         }
     }
-    const [environments, baseUrls] = await Promise.all([
+    const [deployed, baseUrls] = await Promise.all([
         fetchEnvironments(prefix, referencedEnvironments, resolver),
         fetchBaseUrls(prefix, referencedBaseUrls, resolver),
     ])
+    const environments = withoutOwnReferenceText(deployed, prefix, service, glue)
     for (const v of variables) {
         for (const [key, value] of Object.entries(env)) {
             env[key] = value.replaceAll(v.pattern, (substring, ...matches: string[]) => {
@@ -344,7 +778,82 @@ async function resolveEnv(
         )
     }
 
-    return env
+    for (const [key, value] of Object.entries(env)) {
+        if (value.includes('$PARAMETER(')) {
+            const other = sourceOfReferenceText(texts[key] ?? '', service, environments)
+            throw new Error(
+                `${service}.${blocks[key] ?? 'env'}.${key} resolved to the text of a parameter reference: the functions of ${other} hold that text in place of the value, as a tool older than 0.6.2 leaves it. Redeploy ${other} with 0.6.2 or later, then this service. Nothing was changed.`,
+            )
+        }
+    }
+
+    // Nothing runs over a value after this: the replacer is a function, so that `$&` or `$1`
+    // in a credential means nothing.
+    const heldOut = new RegExp(`${marker}(\\d+)\u{0}`, 'gu')
+    const resolved = Object.fromEntries(
+        Object.entries(env).map(([key, value]) => [
+            key,
+            value.replaceAll(heldOut, (_text: string, index: string) => {
+                const copied = held[Number(index)]
+                const credential = copied === undefined ? undefined : fetched[copied.key]
+                if (copied === undefined || credential === undefined) {
+                    return variableError(`Variable for ${service} not found.`)
+                }
+                return copied.kind === 'PUBLIC_KEY' ? publicKeyOf(credential) : credential
+            }),
+        ]),
+    )
+    return {
+        ...resolved,
+        ...fetched,
+        ...(Object.keys(versions).length !== 0 && { [versionsKey]: JSON.stringify(versions) }),
+    }
+}
+
+// The text of a reference in the service's own functions is what a tool older than 0.6.2 left
+// there. It is ignored, not refused: this deploy is the one that repairs it.
+function withoutOwnReferenceText(
+    environments: { [service: string]: { [key: string]: string } },
+    prefix: string,
+    service: string,
+    glue: GlueFile,
+) {
+    const deployed = environments[service]
+    if (!deployed) {
+        return environments
+    }
+    const kept = Object.entries(deployed).filter(([key, value]) => {
+        if (!value.includes('$PARAMETER(')) {
+            return true
+        }
+        glue.warn(
+            `${service}: the deployed value of ${key} is the text of a parameter reference and is ignored. Run "deploy secret check ${prefix} ${service} --glue ${glue.file}"; redeploy the services that read it.`,
+        )
+        return false
+    })
+    return { ...environments, [service]: Object.fromEntries(kept) }
+}
+
+function sourceOfReferenceText(
+    text: string,
+    service: string,
+    environments: { [service: string]: { [key: string]: string } },
+) {
+    const holdsText = (other: string, key?: string) =>
+        Object.entries(environments[other] ?? {}).some(
+            ([deployedKey, value]) =>
+                (key === undefined || key === deployedKey) && value.includes('$PARAMETER('),
+        )
+    const direct = text
+        .matchAll(copy)
+        .find(
+            ([, , other, key]) => other !== undefined && other !== service && holdsText(other, key),
+        )?.[2]
+    return (
+        direct ??
+        Object.keys(environments).find(other => other !== service && holdsText(other)) ??
+        'another service'
+    )
 }
 
 async function fetchEnvironments(prefix: string, services: string[], resolver: Resolver) {

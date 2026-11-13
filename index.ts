@@ -3,6 +3,7 @@ import { type Reflection, reflect } from '@movogo-io/host/reflect'
 import { checkAccount, checkSlot } from './lib/aws/account.js'
 import { credentialsSource } from './lib/aws/credentials.js'
 import { Resolver } from './lib/aws/resolve.js'
+import { checkEnvironmentSize } from './lib/aws/services/lambda.js'
 import { desiredLayers } from './lib/aws/services/layers.js'
 import { getCurrentState, sync } from './lib/aws/sync.js'
 import { getGlue, glueFilePath } from './lib/glue.js'
@@ -60,7 +61,7 @@ async function deployChecked(
 ) {
     const resolver = new Resolver(context)
     const [{ service, implementations, publishTopics, corsSites, env, ...provider }, reflection] =
-        await Promise.all([getGlue(path, envName, resolver, glueFile), reflect(path)])
+        await Promise.all([getGlue(path, envName, resolver, glueFile, context.log), reflect(path)])
     validateEventFilters(reflection)
     const functionNames = [...reflection.http, ...reflection.timers, ...reflection.events].map(
         fn => fn.name,
@@ -86,6 +87,8 @@ async function deployChecked(
         ),
     ])
 
+    const environment = await env
+    checkEnvironmentSize(service, environment)
     return await sync(
         context,
         envName,
@@ -94,7 +97,7 @@ async function deployChecked(
         reflection,
         publishTopics,
         corsSites,
-        await env,
+        environment,
         Object.fromEntries(code.map(({ fn, ...c }) => [fn, c])),
         layers,
         provider,
