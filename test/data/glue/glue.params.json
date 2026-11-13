@@ -1,6 +1,11 @@
 {
   "slotParametersFrom": "dev",
-  "aws": { "accountId": "328342419074", "slots": ["w9"] },
+  "aws": {
+    "accountId": "328342419074",
+    "slots": [
+      "w9"
+    ]
+  },
   "implementations": {
     "@movogo-io/service": {
       "implementation": "@movogo-io/aws-host",
@@ -9,12 +14,28 @@
   },
   "services": {
     "param-user": {
+      "env": {
+        "SEEDS_KEY_ARN": "arn:aws:kms:eu-north-1:328342419074:key/0c4512a6-949f-4cb5-b7e7-c3dea0c412b9"
+      },
       "secrets": {
         "PARAMETERS": true,
         "PROOF_VALUE": "$PARAMETER()",
         "PROOF_LITERAL": "$PARAMETER()"
       }
     },
-    "param-other": {}
+    "param-other": {
+      "env": {
+        "SEEDS_KEY_ARN": "arn:aws:kms:eu-north-1:328342419074:key/0c4512a6-949f-4cb5-b7e7-c3dea0c412b9"
+      },
+      "aws": {
+        "policyStatements": [
+          {
+            "Effect": "Allow",
+            "Action": "kms:Decrypt",
+            "Resource": "arn:aws:kms:eu-north-1:328342419074:key/0c4512a6-949f-4cb5-b7e7-c3dea0c412b9"
+          }
+        ]
+      }
+    }
   }
 }
