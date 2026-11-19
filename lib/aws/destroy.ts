@@ -1,5 +1,5 @@
 import { isSlot } from '../glue.js'
-import { checkAccount, checkSlot } from './account.js'
+import { checkAccount, checkSlot, checkStage } from './account.js'
 import { credentialsSource } from './credentials.js'
 import { type Context } from './lite.js'
 import { deleteApi, getApis } from './services/api-gateway.js'
@@ -65,6 +65,7 @@ export async function destroy(
 ) {
     assertSlot(stage)
     await checkSlot(`destroy ${stage}`, stage, glueFile)
+    await checkStage(context, `destroy ${stage}`, stage, glueFile)
     const caller = await checkAccount(context, `destroy ${stage}`, glueFile, credentials, 'refuse')
     context.log.trace(`destroying ${stage} as ${caller.arn}`)
     const plan = await planDestroy(context, stage, service)

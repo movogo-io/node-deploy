@@ -4,8 +4,9 @@ For `@movogo-io/deploy` 0.6.2 and later. The commands and the reference are desc
 [README](README.md#credentials-from-the-parameter-store); this is the order in which they are
 used, and what to do when something reads wrong.
 
-The `secret` commands check the account, not that the glue file belongs to the stage named; two
-stages in one account are told apart only by naming the right file.
+The `secret` commands check the account and, where the glue file declares `aws.stage` and
+`aws.region`, that the file belongs to the stage named and the region used. Without `aws.stage`
+two stages in one account are told apart only by naming the right file.
 
 `put`, `init` and `init-key` are run by a person, never by an agent session: a value typed into
 `put` would pass through the session's context, and the keys are made by one of their

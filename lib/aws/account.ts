@@ -55,6 +55,32 @@ export async function checkSlot(intent: string, stage: string, glueFile: string)
 }
 
 /**
+Whether the glue file is the one of the stage and region the command works on, where the file
+says which those are: two stages in one account pass the account check with each other's file.
+A slot is not compared with `aws.stage`, since it is deployed with the file of the stage that
+lists it and checkSlot asks that; the region holds for it too. It asks AWS nothing, and callers
+run it before their first request.
+*/
+export async function checkStage(
+    context: Pick<Context, 'env'>,
+    intent: string,
+    stage: string,
+    glueFile: string,
+) {
+    const { stage: declared, region } = await declaredAws(glueFile)
+    if (declared !== undefined && declared !== stage && !isSlot(stage)) {
+        throw new Error(
+            `Refusing to ${intent}: ${glueFile} declares stage ${declared} in aws.stage, not ${stage}. Name the glue file of ${stage}. Nothing was changed.`,
+        )
+    }
+    if (region !== undefined && region !== context.env.AWS_REGION) {
+        throw new Error(
+            `Refusing to ${intent}: ${glueFile} declares region ${region} in aws.region, but the requests would go to ${context.env.AWS_REGION ?? 'no region'}: the region is AWS_REGION, else AWS_DEFAULT_REGION, else the profile's. Nothing was changed.`,
+        )
+    }
+}
+
+/**
 The account check of a command that has no glue file to name its account: the caller's ARN is
 traced before the command's first write, and an account the caller named is compared with the
 one the credentials reach.

@@ -1,8 +1,8 @@
 import { type SecretArguments } from '../arguments.js'
-import { checkAccount } from '../aws/account.js'
+import { checkAccount, checkStage } from '../aws/account.js'
 import { type AwsEnv, credentialsSource } from '../aws/credentials.js'
 import { AwsError, localAwsEnv } from '../aws/lite.js'
-import { GlueFileError, readGlueFile } from '../glue.js'
+import { GlueFileError, isSlot, readGlueFile } from '../glue.js'
 import { init, initKey } from './keys.js'
 import { check, importValue, list, put, restore, rm } from './parameters.js'
 import { servicesOf } from './references.js'
@@ -49,7 +49,17 @@ async function secret(args: SecretArguments, io: SecretIo, awsEnv: () => Promise
             'PARAMETERS is the entry that marks a block with references, not a parameter',
         )
     }
+    // checkStage passes a slot whatever aws.stage says, leaving the slot to a check of
+    // aws.slots that no secret command runs.
+    if (isSlot(args.stage)) {
+        throw new Refusal(
+            `secret ${args.name} takes no slot: ${args.stage} has no parameters and no key of its own; a deploy to it reads those of the stage its glue names. Run the command for that stage`,
+        )
+    }
     const context = { env: await refusing(awsEnv), log: io.log }
+    await refusing(() =>
+        checkStage(context, `secret ${args.name} on ${args.stage}`, args.stage, args.glueFile),
+    )
     const caller = await refusing(() =>
         checkAccount(
             context,

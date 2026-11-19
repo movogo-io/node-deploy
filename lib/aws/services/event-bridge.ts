@@ -10,7 +10,8 @@ state it has: PutRule without a State enables the rule, which would switch a sta
 on with every deploy. A timer the code no longer has loses its rule and target.
 
 A slot is built by many deploys before its tables and data are there, so a rule created on one
-starts disabled; whoever completes the slot enables its timers.
+starts disabled; whoever completes the slot enables its timers. A glue file asks the same of any
+stage with `aws.newTimers`.
 */
 export async function syncEventBridge(
     context: Context,
@@ -19,18 +20,19 @@ export async function syncEventBridge(
     prefix: string,
     service: string,
     reflection: Pick<Reflection, 'timers'>,
+    ownedTimerNames: string[],
+    newTimers: 'disabled' | undefined,
 ) {
-    const current = await getOwnRules(
-        context,
-        prefix,
-        service,
-        reflection.timers.map(fn => fn.name),
-    )
-    const { put, remove } = ruleChanges(reflection.timers, current, prefix)
+    const current = await getOwnRules(context, prefix, service, ownedTimerNames)
+    const { put, remove } = ruleChanges(reflection.timers, current, prefix, newTimers)
     const created = put.filter(timer => current.every(rule => rule.name !== timer.name))
     if (isSlot(prefix) && created.length !== 0) {
         context.log.warn(
             `new timers of ${service} created disabled (${created.map(timer => timer.name).join(', ')}): ${prefix} is a slot, and a slot's timers stay off until they are enabled`,
+        )
+    } else if (newTimers === 'disabled' && created.length !== 0) {
+        context.log.warn(
+            `new timers of ${service} created disabled (${created.map(timer => timer.name).join(', ')}): the glue sets aws.newTimers to disabled, and they stay off until they are enabled`,
         )
     }
     for (const name of remove) {
@@ -47,16 +49,19 @@ export async function syncEventBridge(
 A new rule takes the state the service's other rules on the stage have, so a stage whose timers
 are switched off does not start one with a deploy. Where they differ it is enabled: one rule
 disabled by hand must not keep every later timer from ever running. On a slot a new rule is
-disabled whatever the others have; an existing one keeps its state there too, so timers enabled
-on a finished slot survive its redeploys.
+disabled whatever the others have, and so it is wherever the glue sets `aws.newTimers`; an
+existing one keeps its state there too, so timers enabled on a finished slot or stage survive
+its redeploys.
 */
 export function ruleChanges(
     timers: { name: string; schedule: string }[],
     current: { name: string; state: string }[],
     stage: string,
+    newTimers: 'disabled' | undefined,
 ) {
     const allDisabled = current.length !== 0 && current.every(rule => rule.state === 'DISABLED')
-    const stateOfNew = allDisabled || isSlot(stage) ? 'DISABLED' : 'ENABLED'
+    const stateOfNew =
+        newTimers === 'disabled' || allDisabled || isSlot(stage) ? 'DISABLED' : 'ENABLED'
     return {
         put: timers.map(({ name, schedule }) => ({
             name,

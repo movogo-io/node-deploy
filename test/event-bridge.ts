@@ -8,10 +8,13 @@ import { context, stubAws } from './lib/aws.js'
 
 describe('timer rules', () => {
     it('creates a rule enabled on a stage that has none', () => {
-        assert.deepStrictEqual(ruleChanges([{ name: 'sweep', schedule: '0 3 * * *' }], [], 'dev'), {
-            put: [{ name: 'sweep', schedule: '0 3 * * *', state: 'ENABLED' }],
-            remove: [],
-        })
+        assert.deepStrictEqual(
+            ruleChanges([{ name: 'sweep', schedule: '0 3 * * *' }], [], 'dev', undefined),
+            {
+                put: [{ name: 'sweep', schedule: '0 3 * * *', state: 'ENABLED' }],
+                remove: [],
+            },
+        )
     })
 
     it('keeps the state of an existing rule, whatever the others have', () => {
@@ -26,6 +29,7 @@ describe('timer rules', () => {
                     { name: 'remind', state: 'ENABLED' },
                 ],
                 'dev',
+                undefined,
             ),
             {
                 put: [
@@ -46,6 +50,7 @@ describe('timer rules', () => {
                     { name: 'remind', state: 'DISABLED' },
                 ],
                 'dev',
+                undefined,
             ).put,
             [{ name: 'fresh', schedule: '0 3 * * *', state: 'DISABLED' }],
         )
@@ -57,6 +62,7 @@ describe('timer rules', () => {
                     { name: 'remind', state: 'ENABLED' },
                 ],
                 'dev',
+                undefined,
             ).put,
             [{ name: 'fresh', schedule: '0 3 * * *', state: 'ENABLED' }],
         )
@@ -71,6 +77,7 @@ describe('timer rules', () => {
                     { name: 'retired', state: 'ENABLED' },
                 ],
                 'dev',
+                undefined,
             ).remove,
             ['retired'],
         )
@@ -86,6 +93,7 @@ describe('timer rules', () => {
                     ],
                     [{ name: 'sweep', state: 'ENABLED' }],
                     stage,
+                    undefined,
                 ),
                 {
                     put: [
@@ -102,7 +110,7 @@ describe('timer rules', () => {
     it('creates a rule disabled on a slot, whatever the others have', () => {
         for (const stage of ['w1', 'w9']) {
             assert.deepStrictEqual(
-                ruleChanges([{ name: 'fresh', schedule: '0 3 * * *' }], [], stage).put,
+                ruleChanges([{ name: 'fresh', schedule: '0 3 * * *' }], [], stage, undefined).put,
                 [{ name: 'fresh', schedule: '0 3 * * *', state: 'DISABLED' }],
                 stage,
             )
@@ -114,6 +122,7 @@ describe('timer rules', () => {
                         { name: 'remind', state: 'ENABLED' },
                     ],
                     stage,
+                    undefined,
                 ).put,
                 [{ name: 'fresh', schedule: '0 3 * * *', state: 'DISABLED' }],
                 stage,
@@ -126,7 +135,40 @@ describe('timer rules', () => {
                         { name: 'remind', state: 'ENABLED' },
                     ],
                     stage,
+                    undefined,
                 ).put,
+                [{ name: 'fresh', schedule: '0 3 * * *', state: 'DISABLED' }],
+                stage,
+            )
+        }
+    })
+
+    it('creates a rule disabled on any stage whose glue asks for it, and keeps the state of an existing one', () => {
+        for (const stage of ['dev', 'production', 'w1']) {
+            assert.deepStrictEqual(
+                ruleChanges(
+                    [
+                        { name: 'sweep', schedule: '0 3 * * *' },
+                        { name: 'fresh', schedule: '*/5 * * * *' },
+                    ],
+                    [
+                        { name: 'sweep', state: 'ENABLED' },
+                        { name: 'retired', state: 'ENABLED' },
+                    ],
+                    stage,
+                    'disabled',
+                ),
+                {
+                    put: [
+                        { name: 'sweep', schedule: '0 3 * * *', state: 'ENABLED' },
+                        { name: 'fresh', schedule: '*/5 * * * *', state: 'DISABLED' },
+                    ],
+                    remove: ['retired'],
+                },
+                stage,
+            )
+            assert.deepStrictEqual(
+                ruleChanges([{ name: 'fresh', schedule: '0 3 * * *' }], [], stage, 'disabled').put,
                 [{ name: 'fresh', schedule: '0 3 * * *', state: 'DISABLED' }],
                 stage,
             )
@@ -146,6 +188,7 @@ describe('timer rules', () => {
                     { name: 'retired', state: 'ENABLED' },
                 ],
                 'w1',
+                undefined,
             ),
             {
                 put: [
@@ -214,6 +257,8 @@ describe('timer rules', () => {
                         { name: 'fresh', schedule: '*/5 * * * *', config: {} },
                     ],
                 },
+                ['sweep', 'fresh'],
+                undefined,
             )
 
             const tagged = [
@@ -334,6 +379,8 @@ describe('timer rules', () => {
                         { name: 'remind', schedule: '0 * * * *', config: {} },
                     ],
                 },
+                ['sweep', 'fresh', 'remind'],
+                undefined,
             )
 
             assert.deepStrictEqual(
@@ -392,6 +439,8 @@ describe('timer rules', () => {
                 'w2',
                 'crew',
                 { timers: [{ name: 'sweep', schedule: '0 3 * * *', config: {} }] },
+                ['sweep'],
+                undefined,
             )
 
             assert.deepStrictEqual(
@@ -439,6 +488,8 @@ describe('timer rules', () => {
                         { name: 'fresh', schedule: '*/5 * * * *', config: {} },
                     ],
                 },
+                ['sweep', 'fresh'],
+                undefined,
             )
 
             assert.deepStrictEqual(
@@ -453,6 +504,81 @@ describe('timer rules', () => {
             assert.deepStrictEqual(warnings, [])
         } finally {
             aws.restore()
+        }
+    })
+
+    it('creates the new rules of a stage whose glue asks for it disabled beside an enabled one, and says so once', async () => {
+        for (const { stage, reason } of [
+            {
+                stage: 'production',
+                reason: 'the glue sets aws.newTimers to disabled, and they stay off until they are enabled',
+            },
+            {
+                stage: 'w1',
+                reason: "w1 is a slot, and a slot's timers stay off until they are enabled",
+            },
+        ]) {
+            const warnings: string[] = []
+            const aws = stubAws(({ action }) => {
+                switch (action) {
+                    case 'ListRules':
+                        return {
+                            Rules: [{ Name: `${stage}-crew-sweep`, Arn: 'arn', State: 'ENABLED' }],
+                        }
+                    case 'PutRule':
+                        return { RuleArn: 'arn:rule' }
+                    default:
+                        return { FailedEntryCount: 0 }
+                }
+            })
+            try {
+                for (const timers of [['sweep', 'fresh', 'remind'], ['sweep']]) {
+                    await syncEventBridge(
+                        {
+                            ...context,
+                            log: {
+                                ...context.log,
+                                warn: message => {
+                                    warnings.push(message)
+                                },
+                            },
+                        },
+                        'eu-north-1',
+                        '123456789012',
+                        stage,
+                        'crew',
+                        {
+                            timers: timers.map(name => ({
+                                name,
+                                schedule: '0 3 * * *',
+                                config: {},
+                            })),
+                        },
+                        timers,
+                        'disabled',
+                    )
+                }
+
+                assert.deepStrictEqual(
+                    aws.calls
+                        .filter(call => call.action === 'PutRule')
+                        .map(({ parameters: { Name: name, State: state } }) => ({ name, state })),
+                    [
+                        { name: `${stage}-crew-sweep`, state: 'ENABLED' },
+                        { name: `${stage}-crew-fresh`, state: 'DISABLED' },
+                        { name: `${stage}-crew-remind`, state: 'DISABLED' },
+                        { name: `${stage}-crew-sweep`, state: 'ENABLED' },
+                    ],
+                    stage,
+                )
+                assert.deepStrictEqual(
+                    warnings,
+                    [`new timers of crew created disabled (fresh, remind): ${reason}`],
+                    stage,
+                )
+            } finally {
+                aws.restore()
+            }
         }
     })
 
@@ -504,6 +630,8 @@ describe('timer rules', () => {
                             { name: 'remind', schedule: '0 * * * *', config: {} },
                         ],
                     },
+                    ['sweep', 'remind'],
+                    undefined,
                 )
 
                 assert.deepStrictEqual(

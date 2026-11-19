@@ -69,6 +69,8 @@ export async function sync(
             permissionsBoundary?: unknown
         }
     },
+    ownedTimerNames: string[],
+    newTimers: 'disabled' | undefined,
 ) {
     const functionNames = [...reflection.http, ...reflection.events, ...reflection.timers].map(
         fn => fn.name,
@@ -115,8 +117,9 @@ export async function sync(
         )
     }
 
+    // With no HTTP entrypoint left, an API the stage has still loses its routes and integrations.
     const gatewayId =
-        reflection.http.length === 0
+        !existingGatewayId && reflection.http.length === 0
             ? undefined
             : await syncGateway(
                   context,
@@ -144,7 +147,16 @@ export async function sync(
     }
 
     await syncTopics(context, fns, prefix, reflection)
-    await syncEventBridge(context, region, account, prefix, service, reflection)
+    await syncEventBridge(
+        context,
+        region,
+        account,
+        prefix,
+        service,
+        reflection,
+        ownedTimerNames,
+        newTimers,
+    )
     await syncTimeToLive(context, prefix, service)
 
     return {
@@ -155,6 +167,9 @@ export async function sync(
             [...reflection.http, ...reflection.timers, ...reflection.events].map(fn => fn.name),
             reflection.revision,
         ),
-        host: gatewayId && `https://${gatewayId}.execute-api.${region}.amazonaws.com/`,
+        host:
+            !gatewayId || reflection.http.length === 0
+                ? undefined
+                : `https://${gatewayId}.execute-api.${region}.amazonaws.com/`,
     }
 }

@@ -1431,6 +1431,90 @@ describe('what a failed check is taken for', () => {
     })
 })
 
+describe('a secret command and the stage its glue declares', () => {
+    const bound = join(directory, 'glue.production.json')
+    const secretOn = async (stage: string, region: string) => {
+        const parsed = parseSecretArguments(['list', 'production', '--glue', bound])
+        assert.ok(parsed.command === 'secret')
+        const args = { ...parsed, stage }
+        const err: string[] = []
+        const record = (line: string) => {
+            err.push(line)
+        }
+        const aws = stubAws(call =>
+            call.action === 'GetCallerIdentity' ? identityOf(adminA) : { Parameters: [] },
+        )
+        try {
+            const exitCode = await runSecret(
+                args,
+                {
+                    out: () => undefined,
+                    log: { trace: () => undefined, warn: record, error: record },
+                    readValue: () => Promise.resolve('throwaway'),
+                },
+                () => Promise.resolve({ ...context.env, AWS_REGION: region }),
+            )
+            return { exitCode, err, calls: aws.calls.length }
+        } finally {
+            aws.restore()
+        }
+    }
+
+    before(async () => {
+        await writeFile(
+            bound,
+            JSON.stringify({
+                aws: { accountId: account, stage: 'production', region: 'eu-north-1' },
+                services: {},
+            }),
+        )
+    })
+
+    it('refuses another stage or region than the glue declares, before any request', async () => {
+        assert.deepStrictEqual(
+            [await secretOn('prod', 'eu-north-1'), await secretOn('production', 'eu-central-1')],
+            [
+                {
+                    exitCode: 1,
+                    err: [
+                        `error: Refusing to secret list on prod: ${bound} declares stage production in aws.stage, not prod. Name the glue file of prod. Nothing was changed.`,
+                    ],
+                    calls: 0,
+                },
+                {
+                    exitCode: 1,
+                    err: [
+                        `error: Refusing to secret list on production: ${bound} declares region eu-north-1 in aws.region, but the requests would go to eu-central-1: the region is AWS_REGION, else AWS_DEFAULT_REGION, else the profile's. Nothing was changed.`,
+                    ],
+                    calls: 0,
+                },
+            ],
+        )
+    })
+
+    it('refuses a slot that got past the command line, before any request', async () => {
+        assert.deepStrictEqual(await secretOn('w1', 'eu-north-1'), {
+            exitCode: 1,
+            err: [
+                'error: secret list takes no slot: w1 has no parameters and no key of its own; a deploy to it reads those of the stage its glue names. Run the command for that stage',
+            ],
+            calls: 0,
+        })
+    })
+
+    it('runs on the stage and region the glue declares', async () => {
+        const { exitCode, err, calls } = await secretOn('production', 'eu-north-1')
+        assert.deepStrictEqual(
+            { exitCode, err, asked: calls !== 0 },
+            {
+                exitCode: 0,
+                err: [],
+                asked: true,
+            },
+        )
+    })
+})
+
 describe('the secret command line', () => {
     const env = {
         PATH: process.env.PATH,

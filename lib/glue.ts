@@ -1,6 +1,7 @@
 import { createPublicKey, generateKeyPairSync, randomBytes } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
+import type { Reflection } from '@movogo-io/host/reflect'
 import { isServiceName } from './aws/destroy.js'
 import { AwsError } from './aws/lite.js'
 
@@ -51,6 +52,7 @@ export async function getGlue(
                 implementations: Implementations
                 publish?: string[]
                 cors?: string
+                omit?: unknown
                 env: { [key: string]: unknown }
                 secrets: { [key: string]: unknown }
                 [provider: string]: unknown
@@ -58,8 +60,17 @@ export async function getGlue(
         }
     }
 
-    const { publish, cors, env, secrets, implementations, ...provider } =
+    const { publish, cors, env, secrets, implementations, omit, ...provider } =
         glue.services[service] ?? {}
+    const omitted = omitOf(omit, service, file)
+    const declared = declaredAwsOf(glueJson, file)
+    // A tool up to 0.6.2 ignores omit and would deploy the entrypoints; aws.stage is a key the
+    // tools from 0.6.0 on refuse, so with it in the file they stop before they deploy.
+    if (omitted.length !== 0 && declared.stage === undefined) {
+        throw new Error(
+            `services.${service}.omit in ${file} needs aws.stage declared at the top level of the same file: a tool that does not know omit would deploy the entrypoints it names, and aws.stage is what makes 0.6.0 to 0.6.2 refuse the file. Nothing was changed.`,
+        )
+    }
     // Awaited here, and so before the build and any write: the block's refusals and the
     // parameters' fetch. What is left waits on the account's function listing, half a minute
     // long, and stays a promise beside the build.
@@ -67,7 +78,7 @@ export async function getGlue(
         file,
         services: glue.services,
         slotParametersFrom: glue.slotParametersFrom,
-        accountId: declaredAwsOf(glueJson, file).accountId,
+        accountId: declared.accountId,
         warn: message => {
             log.warn(message)
         },
@@ -81,7 +92,99 @@ export async function getGlue(
         publishTopics: publish ?? [],
         corsSites: cors ? (glue.websites[cors] ?? []) : [],
         env: expandEnv(prepared),
+        omit: omitted,
+        newTimers: declared.newTimers,
         ...provider,
+    }
+}
+
+function omitOf(omit: unknown, service: string, glueFile: string) {
+    if (omit === undefined) {
+        return []
+    }
+    const names = Array.isArray(omit)
+        ? omit.filter((name): name is string => typeof name === 'string' && name !== '')
+        : []
+    if (
+        !Array.isArray(omit) ||
+        names.length !== omit.length ||
+        new Set(names).size !== names.length
+    ) {
+        throw new Error(
+            `services.${service}.omit in ${glueFile} must be a list of entrypoint names, each once: an entrypoint file's name without .ts.`,
+        )
+    }
+    return names
+}
+
+/**
+The reflection without the entrypoints the service's glue block omits on this stage. A deploy
+makes and removes everything from the reflection, so an omitted entrypoint the stage already has
+goes as one deleted from the code does. A name that matches no entrypoint is refused: a typo
+would deploy the entrypoint it was meant to leave out.
+*/
+export function withoutOmitted(
+    reflection: Reflection,
+    omit: string[],
+    service: string,
+    glueFile: string,
+): Reflection {
+    if (omit.length === 0) {
+        return reflection
+    }
+    const names = [...reflection.http, ...reflection.timers, ...reflection.events].map(
+        fn => fn.name,
+    )
+    const unmatched = omit.filter(name => !names.includes(name))
+    if (unmatched.length !== 0) {
+        throw new Error(
+            `services.${service}.omit in ${glueFile} names ${unmatched.join(', ')}, which the service has no entrypoint of. Its entrypoints are ${names.join(', ')}. Nothing was changed.`,
+        )
+    }
+    // With no function left the sync fails half way, after its first deletes.
+    if (names.every(name => omit.includes(name))) {
+        throw new Error(
+            `services.${service}.omit in ${glueFile} names every entrypoint of the service, which leaves nothing to deploy. Nothing was changed.`,
+        )
+    }
+    return {
+        ...reflection,
+        http: reflection.http.filter(fn => !omit.includes(fn.name)),
+        timers: reflection.timers.filter(fn => !omit.includes(fn.name)),
+        events: reflection.events.filter(fn => !omit.includes(fn.name)),
+    }
+}
+
+/**
+What a deploy works from, given the glue's `omit` and `newTimers` and the service as reflected:
+`kept` is what is built and what the stage ends up with, `types` and `functionNames` are of the
+kept alone. `ownedNames` are all entrypoints and `ownedTimerNames` all timers, the omitted too:
+a function named for an entrypoint, and a rule named for a timer, is the service's own whatever
+its tags, so the one a stage already has is deleted, where the kept names alone would leave it
+alone untagged. A rule named for an entrypoint that is no timer is not the service's own.
+*/
+export function stageEntrypoints(
+    reflected: Reflection,
+    glue: { omit: string[]; newTimers: 'disabled' | undefined },
+    service: string,
+    glueFile: string,
+) {
+    const kept = withoutOmitted(reflected, glue.omit, service, glueFile)
+    const types: { [name: string]: 'http' | 'timer' | 'event' } = Object.fromEntries([
+        ...kept.http.map(fn => [fn.name, 'http'] as const),
+        ...kept.timers.map(fn => [fn.name, 'timer'] as const),
+        ...kept.events.map(fn => [fn.name, 'event'] as const),
+    ])
+    return {
+        kept,
+        types,
+        functionNames: [...kept.http, ...kept.timers, ...kept.events].map(fn => fn.name),
+        ownedNames: [...reflected.http, ...reflected.timers, ...reflected.events].map(
+            fn => fn.name,
+        ),
+        ownedTimerNames: reflected.timers.map(fn => fn.name),
+        newTimers: glue.newTimers,
+        omitted: glue.omit,
     }
 }
 
@@ -109,10 +212,11 @@ export async function readGlueFile(glueFile: string): Promise<unknown> {
 }
 
 /**
-What the glue file says about its stage's account, in `aws` at the top level, once for the file:
-`accountId`, as a string so that an id starting with zero survives JSON, and `slots`, the slots
-that account may hold. A key the tool does not know is refused: `accountID` or `account` would
-otherwise read as no account declared, and the check the author asked for would silently not run.
+What the glue file says about its stage, in `aws` at the top level, once for the file:
+`accountId`, as a string so that an id starting with zero survives JSON, `slots`, the slots that
+account may hold, `stage` and `region`, which the file is refused outside of, and `newTimers`. A
+key the tool does not know is refused: `accountID` or `account` would otherwise read as no
+account declared, and the check the author asked for would silently not run.
 */
 export async function declaredAws(glueFile: string) {
     return declaredAwsOf(await readGlueFile(glueFile), glueFile)
@@ -120,7 +224,13 @@ export async function declaredAws(glueFile: string) {
 
 function declaredAwsOf(glue: unknown, glueFile: string) {
     if (glue === null || typeof glue !== 'object' || !('aws' in glue)) {
-        return { accountId: undefined, slots: [] }
+        return {
+            accountId: undefined,
+            slots: [],
+            stage: undefined,
+            region: undefined,
+            newTimers: undefined,
+        }
     }
     const { aws } = glue
     if (aws === null || typeof aws !== 'object' || Array.isArray(aws)) {
@@ -132,7 +242,13 @@ function declaredAwsOf(glue: unknown, glueFile: string) {
             `aws in ${glueFile} holds ${unknown.join(', ')}, which the tool does not know. The top-level aws object takes ${topLevelAwsKeys.join(', ')}.`,
         )
     }
-    return { accountId: accountIdOf(aws, glueFile), slots: slotsOf(aws, glueFile) }
+    return {
+        accountId: accountIdOf(aws, glueFile),
+        slots: slotsOf(aws, glueFile),
+        stage: stageOf(aws, glueFile),
+        region: regionOf(aws, glueFile),
+        newTimers: newTimersOf(aws, glueFile),
+    }
 }
 
 /**
@@ -158,7 +274,7 @@ export function isStageName(stage: string) {
     return /^[A-Za-z0-9][A-Za-z0-9_-]*$/u.test(stage)
 }
 
-const topLevelAwsKeys = ['accountId', 'slots']
+const topLevelAwsKeys = ['accountId', 'slots', 'stage', 'region', 'newTimers']
 
 function accountIdOf(aws: object, glueFile: string) {
     if (!('accountId' in aws)) {
@@ -181,6 +297,40 @@ function slotsOf(aws: object, glueFile: string) {
         throw new Error(`aws.slots in ${glueFile} must be a list of slot names, w1 to w9.`)
     }
     return slots
+}
+
+// A slot is never the stage a file belongs to: it is deployed with that stage's file, which
+// lists it in `slots`.
+function stageOf(aws: object, glueFile: string) {
+    if (!('stage' in aws)) {
+        return undefined
+    }
+    if (typeof aws.stage !== 'string' || !isStageName(aws.stage) || isSlot(aws.stage)) {
+        throw new Error(
+            `aws.stage in ${glueFile} must name the stage the file belongs to, and no slot: a slot is listed in aws.slots.`,
+        )
+    }
+    return aws.stage
+}
+
+function regionOf(aws: object, glueFile: string) {
+    if (!('region' in aws)) {
+        return undefined
+    }
+    if (typeof aws.region !== 'string' || !/^[a-z]{2}(?:-[a-z]+)+-\d$/u.test(aws.region)) {
+        throw new Error(`aws.region in ${glueFile} must name an AWS region, like eu-north-1.`)
+    }
+    return aws.region
+}
+
+function newTimersOf(aws: object, glueFile: string) {
+    if (!('newTimers' in aws)) {
+        return undefined
+    }
+    if (aws.newTimers !== 'disabled') {
+        throw new Error(`aws.newTimers in ${glueFile} must be "disabled" or left out.`)
+    }
+    return 'disabled' as const
 }
 
 /**

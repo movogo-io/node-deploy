@@ -1,6 +1,6 @@
 // spell-checker: ignore rendr sparticuz
 import assert from 'node:assert/strict'
-import { rm } from 'node:fs/promises'
+import { readdir, readFile, rm } from 'node:fs/promises'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { install } from '../lib/npm.js'
@@ -164,8 +164,96 @@ describe('stage', () => {
         await rm(stagePath, { recursive: true, force: true })
 
         await assert.rejects(
-            stage(log, stagePath, path, 'test', implementations, 'layered', types, {}),
+            stage(log, stagePath, path, 'test', implementations, 'layered', types, {}, []),
             { message: 'Suspicious bundler warnings.' },
+        )
+    }).timeout(120_000)
+
+    it('bundles only the entrypoints it is given, into an empty build directory, and keeps no hash of the others', async () => {
+        const stagePath = join(tmpdir(), 'riddance', 'stage-test', 'left-out')
+        await rm(stagePath, { recursive: true, force: true })
+
+        // render imports what nothing provides, so bundling it would be refused.
+        const staged = await stage(
+            log,
+            stagePath,
+            path,
+            'test',
+            implementations,
+            'layered',
+            { plain: 'http' },
+            {},
+            ['render'],
+        )
+        const hashes = JSON.parse(await readFile(join(stagePath, '.hashes.json'), 'utf-8')) as {
+            [source: string]: string
+        }
+
+        assert.deepStrictEqual(
+            {
+                staged: staged.map(({ fn, fileName }) => ({ fn, fileName })),
+                bundles: (await readdir(stagePath)).filter(file => file.endsWith('.min.js')),
+                hashed: Object.keys(hashes).filter(file => file.endsWith('.js')),
+            },
+            {
+                staged: [{ fn: 'plain', fileName: 'index.js' }],
+                bundles: ['plain.min.js'],
+                hashed: ['plain.js'],
+            },
+        )
+
+        // Given the entrypoint later, it is built then, and not taken for built already.
+        assert.deepStrictEqual(
+            (
+                await stage(
+                    log,
+                    stagePath,
+                    path,
+                    'test',
+                    implementations,
+                    'layered',
+                    types,
+                    { render: ['@layer/browser'] },
+                    [],
+                )
+            ).map(({ fn }) => fn),
+            ['render', 'plain'],
+        )
+
+        // Left out again, the hash that build kept of it does not make this one a changed build.
+        assert.deepStrictEqual(
+            await stage(
+                log,
+                stagePath,
+                path,
+                'test',
+                implementations,
+                'layered',
+                { plain: 'http' },
+                {},
+                ['render'],
+            ),
+            staged,
+        )
+    }).timeout(120_000)
+
+    it('refuses a root file that has no type and is not left out, from an empty build directory', async () => {
+        const stagePath = join(tmpdir(), 'riddance', 'stage-test', 'untyped')
+        await rm(stagePath, { recursive: true, force: true })
+
+        await assert.rejects(
+            stage(
+                log,
+                stagePath,
+                path,
+                'test',
+                implementations,
+                'layered',
+                { plain: 'http' },
+                {},
+                [],
+            ),
+            { message: 'Type of function render not determined.' },
         )
     }).timeout(120_000)
 
@@ -184,6 +272,7 @@ describe('stage', () => {
             {
                 render: ['@layer/browser'],
             },
+            [],
         )
 
         assert.deepStrictEqual(
@@ -211,15 +300,23 @@ describe('stage', () => {
 
         // Staged again unchanged, the cached bundles are served as they were.
         assert.deepStrictEqual(
-            await stage(log, stagePath, path, 'test', implementations, 'layered', types, {
-                render: ['@layer/browser'],
-            }),
+            await stage(
+                log,
+                stagePath,
+                path,
+                'test',
+                implementations,
+                'layered',
+                types,
+                { render: ['@layer/browser'] },
+                [],
+            ),
             staged,
         )
 
         // Staged again without the external, the cached bundle is not served.
         await assert.rejects(
-            stage(log, stagePath, path, 'test', implementations, 'layered', types, {}),
+            stage(log, stagePath, path, 'test', implementations, 'layered', types, {}, []),
             { message: 'Suspicious bundler warnings.' },
         )
     }).timeout(120_000)

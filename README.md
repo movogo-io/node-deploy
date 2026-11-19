@@ -12,6 +12,33 @@ deploy --help
 
 `<path>` defaults to the current directory and the glue file to `../glue/glue.json` beside it.
 
+## Upgrading from 0.6.2
+
+Nothing is asked of a glue file that declares none of the new settings: every stage, slots
+included, deploys as with 0.6.2, with one change in behaviour.
+
+- **A service that has an API but no HTTP entrypoint any more now loses the API's routes and
+  integrations**, with or without the new settings. 0.6.2 left them in place once the last HTTP
+  entrypoint was gone from the code, pointing at functions it had deleted. The API itself stays,
+  empty, with its address.
+- The top-level `aws` object takes three more keys, `stage`, `region` and `newTimers`; see
+  [The account a stage lives in, and its slots](#the-account-a-stage-lives-in-and-its-slots) and
+  [Timer rules](#timer-rules).
+- A service's block takes `omit`, the entrypoints a stage is deployed without; see
+  [Entrypoints a stage leaves out](#entrypoints-a-stage-leaves-out).
+- 0.6.0, 0.6.1 and 0.6.2 refuse a glue file whose top-level `aws` holds one of the three keys
+  (`aws in … holds stage, which the tool does not know`) and change nothing.
+- **Every tool up to 0.6.2 ignores `omit`** and would deploy the entrypoints it names. `omit` is
+  therefore refused in a glue file that does not declare `aws.stage`: with that key in the file,
+  0.6.0, 0.6.1 and 0.6.2 refuse the file instead of deploying what it omits.
+- **A tool below 0.6.0 ignores the three keys and `omit`**: it deploys with any glue file to any
+  stage and region, creates new timers enabled, and deploys every omitted entrypoint. Nothing in
+  the file stops such a tool, so move every pin below 0.6.0 that deploys with the file before a
+  key is committed, and do not count on a setting where one may still run.
+- `stage` and `region` protect only a file that declares them. Where two stages share an
+  account, give them to every glue file of that account; see the note under
+  [The account a stage lives in, and its slots](#the-account-a-stage-lives-in-and-its-slots).
+
 ## Upgrading from 0.6.1
 
 **Before your first deploy**
@@ -157,7 +184,7 @@ one the deploy fails. The deploy prints the caller's ARN before it changes anyth
 }
 ```
 
-A glue file is per stage. `aws` at its top level holds two settings:
+A glue file is per stage. `aws` at its top level holds these settings, each optional:
 
 - **`accountId`**: the AWS account of the stage, as a string of twelve digits. Before a deploy
   changes anything it asks STS which account its credentials reach. If that is another account it
@@ -167,8 +194,41 @@ A glue file is per stage. `aws` at its top level holds two settings:
   `destroy` of a slot are refused unless the glue file they were given lists that slot. A glue
   file without `slots` permits no slot. Stages that are not slots (`dev`, `staging`, `production`)
   need no entry.
+- **`stage`**: the stage the file belongs to, never a slot. A deploy and a `secret` command for
+  any other stage are refused with this file, before any change is made; the refusal names
+  both stages and the file. It tells apart two stages that share an account, which `accountId`
+  cannot. A slot is not compared with it: a slot is deployed with the file of the stage that
+  lists it in `slots`.
+- **`region`**: the AWS region of the stage, as in `eu-north-1`. A deploy, a `destroy` and a
+  `secret` command are refused, before any change is made, when the
+  [region they would use](#credentials) is another; the refusal names both regions and the file.
+  It holds for the file's slots too.
+- **`newTimers`**: `"disabled"`, or left out. With it every new [timer rule](#timer-rules) is
+  created disabled, on any stage.
 
-Any other key in that object is refused.
+```json
+{
+  "aws": {
+    "accountId": "123456789012",
+    "stage": "production",
+    "region": "eu-north-1",
+    "newTimers": "disabled"
+  }
+}
+```
+
+Any other key in that object is refused. A file without `stage` or `region` is checked for
+neither, as before.
+
+The two refusals come before the account check and before the command's own requests. Finding
+the credentials comes before them, and for a role or SSO profile that is
+`aws configure export-credentials`, which may ask STS or SSO; it reads and changes nothing.
+
+**`stage` and `region` protect only the file that declares them.** The check compares the command
+with the file it was given, so a file without the keys passes for every stage of its account:
+with `glue.staging.json` bound and `glue.dev.json` not, `deploy staging glue.dev.json` still goes
+through. Where two stages share an account, every glue file of that account must declare `stage`
+and `region`; one file left without them leaves each stage of the account open to that file.
 
 A deploy to a slot differs from a deploy to any other stage in three ways: it creates a new
 [timer rule](#timer-rules) disabled, it reserves
@@ -277,9 +337,11 @@ They keep a stage's credentials in the parameter store. No command prints a valu
 | `restore <stage> <service> <KEY> <version>` | Puts an earlier version's value as the newest version. |
 | `rm <stage> <service> <KEY> [--yes]` | Deletes a parameter with all its versions. It refuses one the glue refers to, and without `--yes` only says how many versions would go. |
 
-**A known limit.** The commands check the account, not that the glue file belongs to the stage
-named: `deploy secret list staging --glue glue.dev.json` passes the check when both stages live in
-one account, as a deploy with the wrong glue file does. Name the stage's own glue file.
+**A known limit.** Unless the glue file declares `aws.stage`, the commands check the account, not
+that the file belongs to the stage named: `deploy secret list staging --glue glue.dev.json` passes
+the check when both stages live in one account, as a deploy with the wrong glue file does. Give
+each glue file its [`aws.stage`](#the-account-a-stage-lives-in-and-its-slots), or name the stage's
+own file.
 
 **`put`, `init` and `init-key` are run by a person, never by an agent session**: a value typed
 into `put` would pass through the session, and the keys are made by one of their administrators.
@@ -325,6 +387,13 @@ there says so in one line (`new timers of … created disabled (…): … is a s
 the slot is complete, with `aws events enable-rule --name <stage>-<service>-<timer>`; from then on
 each rule keeps its state like on any other stage, so redeploys leave an enabled timer enabled. A
 removed timer's rule and target are deleted on a slot too.
+
+**With `"newTimers": "disabled"`** in the glue's top-level `aws`, any stage creates its new rules
+disabled in the same way, and says so in one line (`new timers of … created disabled (…): the
+glue sets aws.newTimers to disabled`). It is for a stage that is built over many deploys with
+real credentials, where a timer must not fire against services that are not there yet. Existing
+rules keep their state, so the setting may stay in the file once the timers are enabled; a timer
+added later then starts disabled as well, until it is enabled by hand.
 
 ## Policy statements and the permissions boundary
 
@@ -379,6 +448,55 @@ stage is removed by hand.
   service that starts the same (`crew-v2` beside `crew`) and still has a tagged function on the
   slot.
 - It stops at the first delete that fails. Run it again to continue.
+
+## Entrypoints a stage leaves out
+
+```json
+{
+  "services": {
+    "rentals": {
+      "omit": ["internal-reset", "internal-fault"]
+    }
+  }
+}
+```
+
+**`omit`**, in a service's block, lists entrypoints the stage is deployed without, each by the
+entrypoint file's name without `.ts`, which is the function's name. It is for entrypoints that
+exist for tests only (a data reset, fault injection) and must not exist on a production stage. A
+glue file is per stage, so the stage's own file says what that stage leaves out.
+
+- An omitted entrypoint is not built and gets no function, and so no route, no topic
+  subscription and no timer rule. With no function nothing writes a log group for it either; a
+  deploy itself never creates or deletes log groups. The deploy says once which were left out
+  (`left out of … on …, as omit in its glue asks: …`).
+- A stage that already has the entrypoint loses it with the next deploy: the function, its
+  route and integration, its subscriptions and its timer rule with the target are deleted,
+  whatever tags the function and the rule carry, since the function is named for an entrypoint
+  of the service and the rule for one of its timers. Its log group stays, as that of any deleted
+  function does; delete it by hand if what it holds must go too.
+- A slot is deployed with the glue file of its stage, so `omit` there leaves the entrypoints out
+  of that stage's slots too, and removes them from a slot that has them.
+- **The glue file must declare [`aws.stage`](#the-account-a-stage-lives-in-and-its-slots)**, or
+  a block with a non-empty `omit` is refused before anything is changed, with the service and
+  the file named. A tool up to 0.6.2 does not know `omit` and would deploy the entrypoints it
+  names; `aws.stage` is a key that 0.6.0, 0.6.1 and 0.6.2 refuse, so with it an old pin stops
+  instead. **A tool below 0.6.0 honours neither key**: it deploys every entrypoint, the omitted
+  ones included, so no such pin may deploy with the file.
+- A name that matches no entrypoint of the service refuses the deploy before anything is
+  changed, and lists the unmatched names and the service's entrypoints: a misspelt name would
+  otherwise deploy the entrypoint it was meant to leave out. Names are matched exactly, capitals
+  included.
+- `omit` is a list of non-empty strings, each once; anything else is refused with the service
+  and the file named. A list that names every entrypoint of the service is refused too.
+- An omitted entrypoint is no function of the service on that stage: `aws.layers`,
+  `aws.external` and `aws.concurrency` may not name it.
+- A service whose only HTTP entrypoints are omitted loses every route and integration of the
+  API it already has, as does one whose last HTTP entrypoint was deleted from the code. The API
+  itself stays, empty, and keeps its address for when the service has an HTTP entrypoint again;
+  the deploy prints no `hosting on` line for it.
+- Without `omit` every entrypoint is built, owned and removed as with 0.6.2; only the emptied
+  API of the item above is new, and it does not depend on `omit`.
 
 ## Per-function settings in the glue
 

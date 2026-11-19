@@ -517,6 +517,32 @@ describe('destroy', () => {
         }
     })
 
+    it('refuses a glue that declares another region, a dry run too, before any request', async () => {
+        const file = join(directory, 'glue.other-region.json')
+        await writeFile(
+            file,
+            JSON.stringify({
+                aws: {
+                    accountId: '123456789012',
+                    slots: ['w1'],
+                    stage: 'dev',
+                    region: 'eu-central-1',
+                },
+            }),
+        )
+        const aws = stubAws(answer)
+        try {
+            for (const dryRun of [true, false]) {
+                await assert.rejects(destroy(context, 'w1', { dryRun, glueFile: file }), {
+                    message: `Refusing to destroy w1: ${file} declares region eu-central-1 in aws.region, but the requests would go to eu-north-1: the region is AWS_REGION, else AWS_DEFAULT_REGION, else the profile's. Nothing was changed.`,
+                })
+            }
+            assert.deepStrictEqual(aws.calls, [])
+        } finally {
+            aws.restore()
+        }
+    })
+
     it('refuses a glue that declares no account, a dry run too, before any request', async () => {
         const aws = stubAws(answer)
         try {

@@ -113,6 +113,7 @@ export async function stage(
     service: string,
     types: { [name: string]: 'http' | 'timer' | 'event' },
     external: External,
+    omitted: string[],
 ) {
     log.trace(`stage dir: ${stagePath}`)
     // The Lambda entry imports the host from whatever the glue substitutes for the service
@@ -126,12 +127,20 @@ export async function stage(
         )
     }
     log.trace('staging...')
-    const { functions, hashes, config, dependencies } = await copyAndPatchProject(
+    const { serviceFiles, hashes, config, dependencies } = await copyAndPatchProject(
         log,
         path,
         stagePath,
         implementations,
     )
+    // Only what the glue omits is left out; any other root file is bundled, and refused there
+    // when it has no type, or its live function would be deleted as surplus. The hash of one
+    // left out is not kept: a later deploy with it would take the hash for a bundle never built.
+    const functions = serviceFiles.filter(fn => !omitted.includes(fn))
+    const leftOut = serviceFiles.filter(fn => omitted.includes(fn))
+    for (const fn of leftOut) {
+        delete hashes[fn + '.js']
+    }
 
     log.trace('syncing dependencies...')
     await install(stagePath)
@@ -159,6 +168,9 @@ export async function stage(
         if ((e as { code?: string }).code !== 'ENOENT') {
             throw e
         }
+    }
+    for (const fn of leftOut) {
+        delete previous[fn + '.js']
     }
 
     const packageChange =
@@ -354,7 +366,7 @@ async function copyAndPatchProject(
     await writeFile(packageFile, updated)
 
     return {
-        functions: serviceFiles.map(f => f.slice(0, -3)),
+        serviceFiles: serviceFiles.map(f => f.slice(0, -3)),
         hashes,
         config: packageJson.config,
         dependencies,

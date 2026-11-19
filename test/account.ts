@@ -3,7 +3,7 @@ import { mkdir, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { deploy } from '../index.js'
-import { checkAccount, checkSlot } from '../lib/aws/account.js'
+import { checkAccount, checkSlot, checkStage } from '../lib/aws/account.js'
 import { declaredAws } from '../lib/glue.js'
 import { context, stubAws } from './lib/aws.js'
 
@@ -22,6 +22,15 @@ describe('account', () => {
         },
     }
 
+    const nothingDeclared = {
+        accountId: undefined,
+        slots: [],
+        stage: undefined,
+        region: undefined,
+        newTimers: undefined,
+    }
+    const bound = join(directory, 'glue.production.json')
+
     const undeclaredWarning = `${withoutAccount} declares no AWS account, so nothing checks that profile dev (account 123456789012) is where to deploy to dev. Give it "aws": { "accountId": "<the stage's twelve-digit account id>" } at the top level.`
 
     before(async () => {
@@ -35,6 +44,18 @@ describe('account', () => {
             JSON.stringify({ aws: { accountId: '123456789012', slots: ['w1', 'w2'] } }),
         )
         await writeFile(withoutAccount, JSON.stringify({ services: { crew: { aws: {} } } }))
+        await writeFile(
+            bound,
+            JSON.stringify({
+                aws: {
+                    accountId: '123456789012',
+                    slots: ['w1'],
+                    stage: 'production',
+                    region: 'eu-north-1',
+                    newTimers: 'disabled',
+                },
+            }),
+        )
     })
 
     it('refuses an account id the glue does not state as twelve digits in a string', async () => {
@@ -66,7 +87,7 @@ describe('account', () => {
             const file = join(directory, `glue.unknown-${name}.json`)
             await writeFile(file, JSON.stringify({ aws }))
             await assert.rejects(declaredAws(file), {
-                message: `aws in ${file} holds ${name}, which the tool does not know. The top-level aws object takes accountId, slots.`,
+                message: `aws in ${file} holds ${name}, which the tool does not know. The top-level aws object takes accountId, slots, stage, region, newTimers.`,
             })
         }
     })
@@ -127,10 +148,7 @@ describe('account', () => {
     it('reads the account the glue declares, and none when it declares none', async () => {
         assert.deepStrictEqual(
             [await declaredAws(withAccount), await declaredAws(withoutAccount)],
-            [
-                { accountId: '123456789012', slots: [] },
-                { accountId: undefined, slots: [] },
-            ],
+            [{ ...nothingDeclared, accountId: '123456789012' }, nothingDeclared],
         )
     })
 
@@ -153,6 +171,7 @@ describe('account', () => {
 
     it('reads the slots the glue lists', async () => {
         assert.deepStrictEqual(await declaredAws(withSlots), {
+            ...nothingDeclared,
             accountId: '123456789012',
             slots: ['w1', 'w2'],
         })
@@ -188,6 +207,142 @@ describe('account', () => {
                 ),
                 { message: /^Refusing to deploy to w1: .* does not list w1 in aws\.slots/u },
             )
+            assert.deepStrictEqual(aws.calls, [])
+        } finally {
+            aws.restore()
+        }
+    })
+
+    it('reads the stage, the region and the state of new timers the glue declares', async () => {
+        assert.deepStrictEqual(await declaredAws(bound), {
+            accountId: '123456789012',
+            slots: ['w1'],
+            stage: 'production',
+            region: 'eu-north-1',
+            newTimers: 'disabled',
+        })
+    })
+
+    it('refuses a stage, a region and a state of new timers the glue states as something else', async () => {
+        for (const [name, stage] of Object.entries({
+            slot: 'w1',
+            path: '../prod',
+            empty: '',
+            list: ['prod'],
+        })) {
+            const file = join(directory, `glue.stage-${name}.json`)
+            await writeFile(file, JSON.stringify({ aws: { stage } }))
+            await assert.rejects(declaredAws(file), {
+                message: `aws.stage in ${file} must name the stage the file belongs to, and no slot: a slot is listed in aws.slots.`,
+            })
+        }
+        for (const [name, region] of Object.entries({
+            zone: 'eu-north-1a',
+            capitals: 'EU-NORTH-1',
+            unnumbered: 'eu-north',
+            // eslint-disable-next-line unicorn/no-null -- as JSON may hold it
+            none: null,
+        })) {
+            const file = join(directory, `glue.region-${name}.json`)
+            await writeFile(file, JSON.stringify({ aws: { region } }))
+            await assert.rejects(declaredAws(file), {
+                message: `aws.region in ${file} must name an AWS region, like eu-north-1.`,
+            })
+        }
+        for (const [name, newTimers] of Object.entries({
+            enabled: 'enabled',
+            state: 'DISABLED',
+            flag: true,
+        })) {
+            const file = join(directory, `glue.timers-${name}.json`)
+            await writeFile(file, JSON.stringify({ aws: { newTimers } }))
+            await assert.rejects(declaredAws(file), {
+                message: `aws.newTimers in ${file} must be "disabled" or left out.`,
+            })
+        }
+    })
+
+    it('refuses another stage than the glue declares, naming both and the file', async () => {
+        for (const [intent, stage] of [
+            ['deploy to prod', 'prod'],
+            ['secret list on dev', 'dev'],
+        ] as const) {
+            await assert.rejects(checkStage(context, intent, stage, bound), {
+                message: `Refusing to ${intent}: ${bound} declares stage production in aws.stage, not ${stage}. Name the glue file of ${stage}. Nothing was changed.`,
+            })
+        }
+    })
+
+    it('refuses another region than the glue declares, naming both and the file', async () => {
+        for (const [region, named] of [
+            ['eu-central-1', 'eu-central-1'],
+            [undefined, 'no region'],
+        ] as const) {
+            await assert.rejects(
+                checkStage(
+                    { env: { ...context.env, AWS_REGION: region } },
+                    'deploy to production',
+                    'production',
+                    bound,
+                ),
+                {
+                    message: `Refusing to deploy to production: ${bound} declares region eu-north-1 in aws.region, but the requests would go to ${named}: the region is AWS_REGION, else AWS_DEFAULT_REGION, else the profile's. Nothing was changed.`,
+                },
+            )
+        }
+    })
+
+    it('passes the stage and region the glue declares, and any where it declares neither', async () => {
+        await checkStage(context, 'deploy to production', 'production', bound)
+        for (const file of [withAccount, withSlots, withoutAccount]) {
+            for (const stage of ['dev', 'prod', 'production', 'w1']) {
+                await checkStage(
+                    { env: { ...context.env, AWS_REGION: 'eu-central-1' } },
+                    `deploy to ${stage}`,
+                    stage,
+                    file,
+                )
+            }
+        }
+    })
+
+    it('holds a slot to the region of the glue that lists it, not to its stage', async () => {
+        await checkStage(context, 'deploy to w1', 'w1', bound)
+        await assert.rejects(
+            checkStage(
+                { env: { ...context.env, AWS_REGION: 'eu-central-1' } },
+                'destroy w1',
+                'w1',
+                bound,
+            ),
+            { message: /^Refusing to destroy w1: .* declares region eu-north-1 in aws\.region/u },
+        )
+    })
+
+    it('refuses a deploy to another stage or region than the glue declares, before any request', async () => {
+        const aws = stubAws(() => identity)
+        try {
+            for (const [stage, region, message] of [
+                ['prod', 'eu-north-1', /declares stage production in aws\.stage, not prod\./u],
+                ['production', 'eu-central-1', /declares region eu-north-1 in aws\.region/u],
+                ['w1', 'eu-central-1', /declares region eu-north-1 in aws\.region/u],
+            ] as const) {
+                await assert.rejects(
+                    deploy(
+                        {
+                            env: { ...context.env, AWS_REGION: region },
+                            log: { ...context.log, error: () => undefined },
+                        },
+                        stage,
+                        join(process.cwd(), 'test/data/greeting'),
+                        bound,
+                        undefined,
+                        undefined,
+                        `profile ${stage}`,
+                    ),
+                    { message },
+                )
+            }
             assert.deepStrictEqual(aws.calls, [])
         } finally {
             aws.restore()
